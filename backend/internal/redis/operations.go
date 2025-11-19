@@ -186,3 +186,21 @@ func (c *Client) PublishSensorUpdate(ctx context.Context, reading *models.Sensor
 
 	return nil
 }
+
+// Incr increments the value of a key by 1 and returns the new value
+func (c *Client) Incr(ctx context.Context, key string) (int64, error) {
+	result, err := c.Client.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to increment key %s: %w", key, err)
+	}
+	return result, nil
+}
+
+// TTL returns the remaining time to live of a key
+func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
+	result, err := c.Client.TTL(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get TTL for key %s: %w", key, err)
+	}
+	return result, nil
+}

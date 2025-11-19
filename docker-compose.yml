@@ -105,6 +105,82 @@ services:
     networks:
       - smart-city-network
 
+  # API Gateway - REST API and WebSocket server
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api-gateway
+    container_name: api-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENVIRONMENT: production
+      APP_LOG_LEVEL: info
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DATABASE: smart_city
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_SSL_MODE: disable
+      POSTGRES_MAX_CONNECTIONS: 25
+      POSTGRES_MAX_IDLE_CONNECTIONS: 5
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_TOPIC_READINGS: sensor-readings
+      KAFKA_TOPIC_ALERTS: alerts
+    networks:
+      - smart-city-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Alert Monitor - Monitors sensor readings and generates alerts
+  alert-monitor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.alert-monitor
+    container_name: alert-monitor
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      APP_ENVIRONMENT: production
+      APP_LOG_LEVEL: info
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DATABASE: smart_city
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_SSL_MODE: disable
+      POSTGRES_MAX_CONNECTIONS: 10
+      POSTGRES_MAX_IDLE_CONNECTIONS: 2
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_TOPIC_READINGS: sensor-readings
+      KAFKA_TOPIC_ALERTS: alerts
+      KAFKA_CONSUMER_GROUP: alert-monitor-group
+    networks:
+      - smart-city-network
+    restart: unless-stopped
+
 networks:
   smart-city-network:
     driver: bridge

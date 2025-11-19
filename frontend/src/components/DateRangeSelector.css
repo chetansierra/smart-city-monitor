@@ -1,0 +1,114 @@
+.date-range-selector {
+  background: white;
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.quick-select {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.range-btn {
+  padding: 0.5rem 1rem;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: #64748b;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.range-btn:hover {
+  border-color: #667eea;
+  color: #667eea;
+  transform: none;
+  box-shadow: none;
+}
+
+.range-btn.active {
+  background: #667eea;
+  border-color: #667eea;
+  color: white;
+}
+
+.custom-range {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e8f0;
+}
+
+.custom-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.input-group label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.input-group input[type="datetime-local"] {
+  padding: 0.625rem;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  background-color: white;
+  transition: border-color 0.2s;
+}
+
+.input-group input[type="datetime-local"]:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.apply-btn {
+  width: 100%;
+  padding: 0.75rem;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.apply-btn:hover:not(:disabled) {
+  background: #5568d3;
+}
+
+.apply-btn:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+  transform: none;
+}
+
+@media (max-width: 768px) {
+  .quick-select {
+    flex-direction: column;
+  }
+
+  .range-btn {
+    width: 100%;
+  }
+
+  .custom-inputs {
+    grid-template-columns: 1fr;
+  }
+}

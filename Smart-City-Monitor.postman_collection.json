@@ -1,0 +1,593 @@
+{
+  "info": {
+    "name": "Smart City Environmental Monitor API",
+    "description": "Complete API collection for Smart City Environmental Monitor - Real-time environmental data monitoring system",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "api_version",
+      "value": "v1",
+      "type": "string"
+    },
+    {
+      "key": "sensor_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "alert_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "Get Health Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Check API health status and service dependencies"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Sensors",
+      "item": [
+        {
+          "name": "Get All Sensors",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sensors?type=temperature&active=true&limit=50&page=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "sensors"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "temperature",
+                  "description": "Filter by sensor type (temperature, pollution, humidity, noise)",
+                  "disabled": true
+                },
+                {
+                  "key": "active",
+                  "value": "true",
+                  "description": "Filter by active status",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Number of results per page (1-1000)"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                }
+              ]
+            },
+            "description": "Retrieve all sensors with optional filtering and pagination"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Sensor by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    if (jsonData.success && jsonData.data) {",
+                  "        pm.collectionVariables.set('sensor_id', jsonData.data.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sensors/{{sensor_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "sensors", "{{sensor_id}}"]
+            },
+            "description": "Retrieve a specific sensor by UUID"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Sensor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const jsonData = pm.response.json();",
+                  "    if (jsonData.success && jsonData.data) {",
+                  "        pm.collectionVariables.set('sensor_id', jsonData.data.id);",
+                  "        console.log('Created sensor ID:', jsonData.data.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test Temperature Sensor\",\n  \"type\": \"temperature\",\n  \"location\": {\n    \"latitude\": 37.7749,\n    \"longitude\": -122.4194,\n    \"address\": \"San Francisco, CA\"\n  },\n  \"active\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sensors",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "sensors"]
+            },
+            "description": "Create a new sensor"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Sensor",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated Temperature Sensor\",\n  \"location\": {\n    \"latitude\": 37.7749,\n    \"longitude\": -122.4194,\n    \"address\": \"San Francisco, CA - Updated\"\n  },\n  \"active\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sensors/{{sensor_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "sensors", "{{sensor_id}}"]
+            },
+            "description": "Update an existing sensor"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Sensor",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sensors/{{sensor_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "sensors", "{{sensor_id}}"]
+            },
+            "description": "Delete a sensor by ID"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Sensor Alerts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sensors/{{sensor_id}}/alerts?limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "sensors", "{{sensor_id}}", "alerts"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Number of alerts to retrieve"
+                }
+              ]
+            },
+            "description": "Get all alerts for a specific sensor"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Readings",
+      "item": [
+        {
+          "name": "Get Latest Readings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/readings/latest?limit=100",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "readings", "latest"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "description": "Number of latest readings to retrieve (1-1000)"
+                }
+              ]
+            },
+            "description": "Retrieve the latest sensor readings across all sensors"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Readings by Sensor",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/readings/sensor/{{sensor_id}}?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z&limit=100&page=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "readings", "sensor", "{{sensor_id}}"],
+              "query": [
+                {
+                  "key": "start_time",
+                  "value": "2024-01-01T00:00:00Z",
+                  "description": "Start time (RFC3339 format)",
+                  "disabled": true
+                },
+                {
+                  "key": "end_time",
+                  "value": "2024-12-31T23:59:59Z",
+                  "description": "End time (RFC3339 format)",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "description": "Number of readings per page"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                }
+              ]
+            },
+            "description": "Retrieve readings for a specific sensor with time range filtering"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Get Statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/analytics/statistics?type=temperature&start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "analytics", "statistics"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "temperature",
+                  "description": "Sensor type filter",
+                  "disabled": true
+                },
+                {
+                  "key": "start_time",
+                  "value": "2024-01-01T00:00:00Z",
+                  "description": "Start time (RFC3339 format)",
+                  "disabled": true
+                },
+                {
+                  "key": "end_time",
+                  "value": "2024-12-31T23:59:59Z",
+                  "description": "End time (RFC3339 format)",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Get statistical analysis (avg, min, max, count) for sensor readings"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Time Series Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/analytics/timeseries?sensor_id={{sensor_id}}&interval=1h&start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "analytics", "timeseries"],
+              "query": [
+                {
+                  "key": "sensor_id",
+                  "value": "{{sensor_id}}",
+                  "description": "Sensor UUID"
+                },
+                {
+                  "key": "interval",
+                  "value": "1h",
+                  "description": "Time bucket interval (5m, 15m, 1h, 24h)"
+                },
+                {
+                  "key": "start_time",
+                  "value": "2024-01-01T00:00:00Z",
+                  "description": "Start time (RFC3339 format)"
+                },
+                {
+                  "key": "end_time",
+                  "value": "2024-12-31T23:59:59Z",
+                  "description": "End time (RFC3339 format)"
+                }
+              ]
+            },
+            "description": "Get time-bucketed aggregated data for visualization"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Sensor Comparison",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/analytics/compare?type=temperature&start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "analytics", "compare"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "temperature",
+                  "description": "Sensor type to compare"
+                },
+                {
+                  "key": "start_time",
+                  "value": "2024-01-01T00:00:00Z",
+                  "description": "Start time (RFC3339 format)",
+                  "disabled": true
+                },
+                {
+                  "key": "end_time",
+                  "value": "2024-12-31T23:59:59Z",
+                  "description": "End time (RFC3339 format)",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Compare statistics across all sensors of the same type"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Trends",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/analytics/trends?sensor_id={{sensor_id}}&hours=24",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "analytics", "trends"],
+              "query": [
+                {
+                  "key": "sensor_id",
+                  "value": "{{sensor_id}}",
+                  "description": "Sensor UUID"
+                },
+                {
+                  "key": "hours",
+                  "value": "24",
+                  "description": "Number of hours to analyze (default: 24)"
+                }
+              ]
+            },
+            "description": "Analyze trends for a specific sensor (increasing, decreasing, stable)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Heatmap Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/analytics/heatmap?type=temperature",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "analytics", "heatmap"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "temperature",
+                  "description": "Sensor type for heatmap"
+                }
+              ]
+            },
+            "description": "Get geographic heatmap data for sensors of a specific type"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Alerts",
+      "item": [
+        {
+          "name": "Get All Alerts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    if (jsonData.success && jsonData.data && jsonData.data.length > 0) {",
+                  "        pm.collectionVariables.set('alert_id', jsonData.data[0].id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/alerts?active=true&severity=high&limit=50&page=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "alerts"],
+              "query": [
+                {
+                  "key": "active",
+                  "value": "true",
+                  "description": "Filter by acknowledgment status (true = unacknowledged only)",
+                  "disabled": true
+                },
+                {
+                  "key": "severity",
+                  "value": "high",
+                  "description": "Filter by severity (low, medium, high, critical)",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Number of alerts per page (1-1000)"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                }
+              ]
+            },
+            "description": "Retrieve all alerts with optional filtering by active status and severity"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Alert by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/alerts/{{alert_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "alerts", "{{alert_id}}"]
+            },
+            "description": "Retrieve a specific alert by ID"
+          },
+          "response": []
+        },
+        {
+          "name": "Acknowledge Alert",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"acknowledged_by\": \"admin_user\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/alerts/{{alert_id}}/acknowledge",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "alerts", "{{alert_id}}", "acknowledge"]
+            },
+            "description": "Acknowledge an alert to mark it as handled"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "WebSocket",
+      "item": [
+        {
+          "name": "WebSocket Connection Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/ws",
+              "host": ["{{base_url}}"],
+              "path": ["ws"]
+            },
+            "description": "WebSocket endpoint for real-time updates.\n\n**Connection:** ws://localhost:8080/ws\n\n**Client Messages:**\n```json\n{\n  \"type\": \"subscribe\",\n  \"sensor_types\": [\"temperature\", \"pollution\"]\n}\n```\n\n**Server Messages:**\n- Reading updates: {\"type\": \"reading\", \"data\": {...}}\n- Alert notifications: {\"type\": \"alert\", \"data\": {...}}\n- Pings: {\"type\": \"ping\"}\n\nNote: Use a WebSocket client to test this endpoint. Postman supports WebSocket connections in newer versions."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global pre-request script",
+          "console.log('Request to:', pm.request.url.toString());"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global test script",
+          "pm.test('Response time is less than 2000ms', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(2000);",
+          "});",
+          "",
+          "if (pm.response.code !== 404 && pm.response.code !== 500) {",
+          "    pm.test('Response has correct content type', function () {",
+          "        pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+          "    });",
+          "}",
+          "",
+          "if (pm.response.code === 200 || pm.response.code === 201) {",
+          "    pm.test('Response has success field', function () {",
+          "        const jsonData = pm.response.json();",
+          "        pm.expect(jsonData).to.have.property('success');",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ]
+}
