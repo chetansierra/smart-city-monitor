@@ -1,0 +1,117 @@
+services:
+  # Zookeeper - Required for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - smart-city-network
+
+  # Kafka Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms256M"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - smart-city-network
+
+  # Kafka UI - Web interface for Kafka
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: smart-city-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - smart-city-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: smart_city
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    networks:
+      - smart-city-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d smart_city"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - smart-city-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Commander - Web UI for Redis (optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    depends_on:
+      - redis
+    ports:
+      - "8082:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    networks:
+      - smart-city-network
+
+networks:
+  smart-city-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-logs:

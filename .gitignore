@@ -1,0 +1,77 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.backup
+.env.tmp
+
+# Logs
+*.log
+logs/
+/tmp/*.log
+
+# Go
+/vendor
+/bin
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+coverage.out
+coverage.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Docker volumes (managed by Docker)
+postgres-data/
+redis-data/
+kafka-data/
+zookeeper-data/
+zookeeper-logs/
+
+# Data directories
+/data
+
+# Build artifacts
+dist/
+build/
+backend/bin/
+
+# Temporary files
+/tmp/smart-city-pids.txt
+/tmp/load-test-*.log
+/tmp/simulator.log
+/tmp/ingestion.log
+
+# Frontend
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Kubernetes secrets (if any)
+k8s/secrets/
+k8s/*.secret.yaml
