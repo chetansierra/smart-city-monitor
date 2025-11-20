@@ -27,11 +27,13 @@ export interface SensorReading {
 
 export interface LatestReading {
   sensor_id: string;
-  sensor_name: string;
+  sensor_name?: string;
   sensor_type: string;
-  location: {
-    lat: number;
-    lon: number;
+  value?: number;
+  unit?: string;
+  location?: {
+    lat?: number;
+    lon?: number;
   };
   readings: {
     temperature?: number;
@@ -40,6 +42,23 @@ export interface LatestReading {
     noise?: number;
   };
   timestamp: string;
+}
+
+export interface LatestReadingResponse {
+  sensor_id: string;
+  sensor_name?: string;
+  sensor_type?: string;
+  value?: number | string;
+  unit?: string;
+  latitude?: number | string;
+  longitude?: number | string;
+  location?: {
+    lat?: number;
+    lon?: number;
+    latitude?: number;
+    longitude?: number;
+  };
+  timestamp?: string | number;
 }
 
 export interface Alert {

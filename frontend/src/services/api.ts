@@ -1,5 +1,6 @@
 import axios from 'axios';
-import type { Sensor, LatestReading, Alert } from '../types/sensor';
+import type { Sensor, LatestReadingResponse, Alert } from '../types/sensor';
+import type { CityStats } from '../types/realtime';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1';
 
@@ -16,13 +17,13 @@ export const getSensors = async (): Promise<Sensor[]> => {
   return response.data.data;
 };
 
-export const getLatestReadings = async (): Promise<LatestReading[]> => {
-  const response = await api.get<{ data: LatestReading[] }>('/readings/latest');
+export const getLatestReadings = async (): Promise<LatestReadingResponse[]> => {
+  const response = await api.get<{ data: LatestReadingResponse[] }>('/readings/latest');
   return response.data.data;
 };
 
-export const getCityStats = async () => {
-  const response = await api.get('/analytics/city-stats');
+export const getCityStats = async (): Promise<CityStats> => {
+  const response = await api.get<{ data: CityStats }>('/analytics/city-stats');
   return response.data.data;
 };
 

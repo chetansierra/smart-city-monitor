@@ -41,6 +41,7 @@ cp .env.example .env
 Edit `.env` to set your API URL:
 ```
 VITE_API_URL=http://localhost:8080/api/v1
+VITE_WS_URL=ws://localhost:8080/ws
 ```
 
 3. Start the development server:

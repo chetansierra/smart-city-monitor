@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import type { Sensor, LatestReading } from '../types/sensor';
-import { getSensors, getLatestReadings } from '../services/api';
+import { useRealtimeData } from '../context/RealtimeContext';
 import './Map.css';
 
 // Fix for default marker icons in React-Leaflet
@@ -64,44 +64,19 @@ interface SensorWithReading extends Sensor {
 }
 
 const Map = () => {
-  const [sensors, setSensors] = useState<SensorWithReading[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { sensors, latestReadings, loading, error } = useRealtimeData();
+  const sensorsWithReadings: SensorWithReading[] = useMemo(
+    () =>
+      sensors.map((sensor) => ({
+        ...sensor,
+        latestReading: latestReadings[sensor.id],
+      })),
+    [latestReadings, sensors]
+  );
 
   // Default center (can be adjusted to your city)
   const defaultCenter: [number, number] = [40.7128, -74.0060]; // New York
   const defaultZoom = 12;
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const [sensorsData, readingsData] = await Promise.all([
-          getSensors(),
-          getLatestReadings()
-        ]);
-
-        // Merge sensors with their latest readings
-        const sensorsWithReadings = sensorsData.map(sensor => {
-          const reading = readingsData.find(r => r.sensor_id === sensor.id);
-          return {
-            ...sensor,
-            latestReading: reading
-          };
-        });
-
-        setSensors(sensorsWithReadings);
-        setError(null);
-      } catch (err) {
-        console.error('Error fetching sensor data:', err);
-        setError('Failed to load sensor data. Please check if the backend is running.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
 
   const formatReadingValue = (value: number | undefined, unit: string = '') => {
     if (value === undefined) return 'N/A';
@@ -127,9 +102,18 @@ const Map = () => {
   }
 
   // Calculate center based on sensors if available
-  const mapCenter: [number, number] = sensors.length > 0
-    ? [sensors[0].location.lat, sensors[0].location.lon]
-    : defaultCenter;
+  const findValidSensorPosition = (): [number, number] | null => {
+    for (const sensor of sensors) {
+      const lat = sensor.location?.lat;
+      const lon = sensor.location?.lon;
+      if (typeof lat === 'number' && typeof lon === 'number') {
+        return [lat, lon];
+      }
+    }
+    return null;
+  };
+
+  const mapCenter: [number, number] = findValidSensorPosition() || defaultCenter;
 
   return (
     <div className="map-container">
@@ -143,10 +127,16 @@ const Map = () => {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {sensors.map((sensor) => (
+        {sensorsWithReadings.map((sensor) => {
+          const lat = sensor.location?.lat;
+          const lon = sensor.location?.lon;
+          if (typeof lat !== 'number' || typeof lon !== 'number') {
+            return null;
+          }
+          return (
           <Marker
             key={sensor.id}
-            position={[sensor.location.lat, sensor.location.lon]}
+            position={[lat, lon]}
             icon={createSensorIcon(sensor.type)}
           >
             <Popup>
@@ -163,27 +153,27 @@ const Map = () => {
                     <p><strong>Area:</strong> {sensor.metadata.area}</p>
                   )}
 
-                  {sensor.latestReading && (
+                  {sensor.latestReading && sensor.latestReading.readings && (
                     <>
                       <hr />
                       <h4>Latest Readings</h4>
                       <div className="readings">
-                        {sensor.latestReading.readings.temperature !== undefined && (
+                        {sensor.latestReading.readings?.temperature !== undefined && (
                           <p>
                             <strong>Temperature:</strong> {formatReadingValue(sensor.latestReading.readings.temperature, '°C')}
                           </p>
                         )}
-                        {sensor.latestReading.readings.humidity !== undefined && (
+                        {sensor.latestReading.readings?.humidity !== undefined && (
                           <p>
                             <strong>Humidity:</strong> {formatReadingValue(sensor.latestReading.readings.humidity, '%')}
                           </p>
                         )}
-                        {sensor.latestReading.readings.pollution !== undefined && (
+                        {sensor.latestReading.readings?.pollution !== undefined && (
                           <p>
                             <strong>Pollution:</strong> {formatReadingValue(sensor.latestReading.readings.pollution, ' AQI')}
                           </p>
                         )}
-                        {sensor.latestReading.readings.noise !== undefined && (
+                        {sensor.latestReading.readings?.noise !== undefined && (
                           <p>
                             <strong>Noise:</strong> {formatReadingValue(sensor.latestReading.readings.noise, ' dB')}
                           </p>
@@ -198,11 +188,12 @@ const Map = () => {
               </div>
             </Popup>
           </Marker>
-        ))}
+        );
+        })}
       </MapContainer>
 
       <div className="map-info">
-        <p>Showing {sensors.length} sensor{sensors.length !== 1 ? 's' : ''}</p>
+        <p>Showing {sensorsWithReadings.length} sensor{sensorsWithReadings.length !== 1 ? 's' : ''}</p>
       </div>
     </div>
   );

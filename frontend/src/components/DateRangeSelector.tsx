@@ -1,18 +1,21 @@
 import { useState } from 'react';
 import './DateRangeSelector.css';
 
+type PresetRange = '1h' | '6h' | '24h' | '7d' | 'custom';
+type QuickRange = Exclude<PresetRange, 'custom'>;
+
 interface DateRangeSelectorProps {
   onRangeChange: (startDate: string, endDate: string) => void;
-  defaultRange?: '1h' | '6h' | '24h' | '7d' | 'custom';
+  defaultRange?: PresetRange;
 }
 
 const DateRangeSelector = ({ onRangeChange, defaultRange = '24h' }: DateRangeSelectorProps) => {
-  const [selectedRange, setSelectedRange] = useState(defaultRange);
+  const [selectedRange, setSelectedRange] = useState<PresetRange>(defaultRange);
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [showCustom, setShowCustom] = useState(false);
 
-  const handleQuickSelect = (range: string) => {
+  const handleQuickSelect = (range: QuickRange) => {
     setSelectedRange(range);
     setShowCustom(false);
 
