@@ -8,7 +8,7 @@ This guide explains how to use the Smart City Monitor Postman collection for API
 - [Environment Variables](#environment-variables)
 - [Testing Workflows](#testing-workflows)
 - [Global Scripts](#global-scripts)
-- [WebSocket Testing](#websocket-testing)
+- [SSE Testing](#sse-testing)
 
 ## Installation
 
@@ -30,7 +30,7 @@ Ensure these variables are set:
 - `api_version`: v1
 - `sensor_id`: (empty - will be auto-populated)
 - `alert_id`: (empty - will be auto-populated)
-- `ws_url`: ws://localhost:8080/ws
+- `stream_url`: http://localhost:8080/stream
 
 ## Collection Overview
 
@@ -63,8 +63,8 @@ The collection includes **26 requests** organized into 6 folders:
 - **Get Alert by ID** - Retrieve specific alert
 - **Acknowledge Alert** - Mark alert as handled
 
-### WebSocket (1 request)
-- **WebSocket Connection Info** - Instructions for WebSocket testing
+### SSE (1 request)
+- **SSE Connection Info** - Instructions for SSE testing
 
 ## Environment Variables
 
@@ -213,26 +213,17 @@ if (jsonData.data && jsonData.data.length > 0) {
 }
 ```
 
-## WebSocket Testing
+## SSE Testing
 
 ### Using Postman (v10.18+)
-1. Click **New** → **WebSocket Request**
-2. Enter URL: `ws://localhost:8080/ws`
+1. Click **New** → **SSE Request**
+2. Enter URL: `http://localhost:8080/stream`
 3. Click **Connect**
-
-4. Send subscription message:
-```json
-{
-  "type": "subscribe",
-  "sensor_types": ["temperature", "pollution"]
-}
-```
-
-5. Receive messages:
+4. Keep the request open and watch incoming messages:
 ```json
 // Reading updates
 {
-  "type": "reading",
+  "type": "sensor_update",
   "data": {
     "sensor_id": "uuid",
     "value": 25.5,
@@ -249,38 +240,30 @@ if (jsonData.data && jsonData.data.length > 0) {
     "message": "High temperature detected"
   }
 }
-
-// Ping (heartbeat)
-{
-  "type": "ping"
-}
 ```
 
-### Using Other WebSocket Clients
+### Using Other SSE Clients
 
-#### wscat (CLI)
+#### curl (CLI)
 ```bash
-npm install -g wscat
-wscat -c ws://localhost:8080/ws
-
-# Send subscription
-> {"type":"subscribe","sensor_types":["temperature"]}
+curl -N http://localhost:8080/stream
 ```
 
 #### Browser JavaScript
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/ws');
+const eventSource = new EventSource('http://localhost:8080/stream');
 
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    type: 'subscribe',
-    sensor_types: ['temperature', 'pollution']
-  }));
+eventSource.onopen = () => {
+  console.log('connected');
 };
 
-ws.onmessage = (event) => {
+eventSource.onmessage = (event) => {
   const data = JSON.parse(event.data);
   console.log('Received:', data);
+};
+
+eventSource.onerror = (error) => {
+  console.error('SSE error:', error);
 };
 ```
 
@@ -394,13 +377,13 @@ Use **Postman Monitor** to:
 2. Update collection with auth headers
 3. Contact API administrator
 
-### WebSocket Connection Fails
-**Problem**: Cannot connect to WebSocket
+### SSE Connection Fails
+**Problem**: Cannot connect to SSE
 
 **Solutions**:
 1. Verify API Gateway is running
-2. Check WebSocket endpoint is `/ws` not `/ws/`
-3. Use `ws://` protocol (not `http://`)
+2. Check SSE endpoint is `/stream` not `/stream/`
+3. Use `http://` (or `https://`) with EventSource
 4. Check firewall settings
 
 ## Running Collection with Newman (CLI)
@@ -450,7 +433,7 @@ Add to your CI pipeline:
 - [Official API Documentation](./API.md)
 - [Postman Learning Center](https://learning.postman.com/)
 - [Newman Documentation](https://learning.postman.com/docs/running-collections/using-newman-cli/command-line-integration-with-newman/)
-- [WebSocket API Testing](https://learning.postman.com/docs/sending-requests/websocket/websocket/)
+- [SSE API Testing](https://learning.postman.com/docs/sending-requests/sse/sse/)
 
 ---
 

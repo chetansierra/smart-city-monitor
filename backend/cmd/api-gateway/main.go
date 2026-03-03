@@ -8,13 +8,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IBM/sarama"
 	"github.com/chetansierra/smart-city-monitor/cmd/api-gateway/handlers"
 	"github.com/chetansierra/smart-city-monitor/internal/config"
 	"github.com/chetansierra/smart-city-monitor/internal/logger"
 	"github.com/chetansierra/smart-city-monitor/internal/middleware"
 	"github.com/chetansierra/smart-city-monitor/internal/postgres"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
-	ws "github.com/chetansierra/smart-city-monitor/internal/websocket"
+	"github.com/chetansierra/smart-city-monitor/internal/sse"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	fiberlogger "github.com/gofiber/fiber/v2/middleware/logger"
@@ -28,6 +29,9 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
+	}
+	if err := cfg.Validate("api-gateway"); err != nil {
+		log.Fatal().Err(err).Msg("Invalid configuration")
 	}
 
 	// Setup logger
@@ -72,14 +76,23 @@ func main() {
 	defer redisClient.Close()
 	log.Info().Msg("Connected to Redis")
 
-	// Create WebSocket hub
-	hub := ws.NewHub()
-	hubCtx, hubCancel := context.WithCancel(context.Background())
-	defer hubCancel()
+	// Create Kafka producer for admin control commands
+	kafkaConfig := sarama.NewConfig()
+	kafkaConfig.Producer.RequiredAcks = sarama.WaitForAll
+	kafkaConfig.Producer.Retry.Max = 5
+	kafkaConfig.Producer.Return.Successes = true
 
-	// Start WebSocket hub
-	go hub.Run(hubCtx)
-	log.Info().Msg("WebSocket hub started")
+	kafkaProducer, err := sarama.NewSyncProducer(cfg.Kafka.Brokers, kafkaConfig)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create Kafka producer")
+	}
+	defer kafkaProducer.Close()
+	log.Info().Msg("Kafka producer created")
+
+	// Create SSE broadcaster
+	broadcaster := sse.NewBroadcaster()
+	go broadcaster.Listen()
+	log.Info().Msg("SSE broadcaster started")
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
@@ -95,7 +108,7 @@ func main() {
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*", // Allow all origins for development (restrict in production)
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Session-ID",
 	}))
 
 	// Logging middleware
@@ -116,19 +129,25 @@ func main() {
 	sensorsHandler := handlers.NewSensorsHandler(db, redisClient)
 	readingsHandler := handlers.NewReadingsHandler(db, redisClient)
 	analyticsHandler := handlers.NewAnalyticsHandler(db, redisClient)
-	alertsHandler := handlers.NewAlertsHandler(db, redisClient)
-	wsHandler := handlers.NewWebSocketHandler(hub, redisClient)
+	sseHandler := handlers.NewSSEHandler(broadcaster, redisClient)
+	metricsHandler := handlers.NewMetricsHandler(db, redisClient, broadcaster, cfg.Kafka.Brokers)
+	adminHandler := handlers.NewAdminHandler(db, redisClient, kafkaProducer)
+	pipelineHandler := handlers.NewPipelineHandler(redisClient, cfg.Kafka.Brokers)
 
 	// Start Redis Pub/Sub listener for real-time updates
-	go wsHandler.StartRedisPubSubListener(hubCtx)
-	log.Info().Msg("Started Redis Pub/Sub listener for WebSocket updates")
+	go sseHandler.StartRedisPubSubListener(context.Background())
+	log.Info().Msg("Started Redis Pub/Sub listener for SSE updates")
 
-	// Start Kafka alert consumer for WebSocket broadcasting
-	go wsHandler.StartAlertListener(hubCtx, cfg.Kafka.Brokers, cfg.Kafka.TopicAlerts)
-	log.Info().Msg("Started Kafka alert listener for WebSocket broadcasting")
+	// Start Session Inactivity Monitor
+	go sensorsHandler.StartInactivityMonitor(context.Background())
+	log.Info().Msg("Started session inactivity monitor")
+
+	// Start nerd-stats aggregator for cached metrics + SSE updates
+	go metricsHandler.StartNerdStatsAggregator(context.Background())
+	log.Info().Msg("Started nerd stats aggregator")
 
 	// Setup routes
-	setupRoutes(app, healthHandler, sensorsHandler, readingsHandler, analyticsHandler, alertsHandler, wsHandler, redisClient)
+	setupRoutes(app, healthHandler, sensorsHandler, readingsHandler, analyticsHandler, sseHandler, metricsHandler, adminHandler, pipelineHandler, redisClient)
 
 	// Start server in a goroutine
 	go func() {

@@ -1,6 +1,11 @@
 #!/bin/bash
 
 # Script to start all Smart City Monitor services
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 echo "========================================="
 echo " Starting Smart City Monitor"
@@ -22,10 +27,11 @@ echo "3. Checking service health..."
 docker ps --format "table {{.Names}}\t{{.Status}}"
 
 echo ""
-echo "4. Creating Kafka topics (if needed)..."
-docker exec kafka kafka-topics --bootstrap-server localhost:9093 --create --topic sensor-readings --partitions 6 --replication-factor 1 --if-not-exists 2>/dev/null
-docker exec kafka kafka-topics --bootstrap-server localhost:9093 --create --topic admin-commands --partitions 3 --replication-factor 1 --if-not-exists 2>/dev/null
-docker exec kafka kafka-topics --bootstrap-server localhost:9093 --create --topic alerts --partitions 3 --replication-factor 1 --if-not-exists 2>/dev/null
+echo "4. Running preflight checks..."
+if ! ./scripts/preflight.sh; then
+    echo "   ⚠️  Preflight checks failed. Fix configuration and retry."
+    exit 1
+fi
 
 echo ""
 echo "5. Waiting for API Gateway to be ready..."
@@ -46,27 +52,14 @@ if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
 fi
 
 echo ""
-echo "6. Starting additional application services..."
-
-# Start sensor simulator in background
-echo "   Starting Sensor Simulator..."
-cd backend
-go run cmd/sensor-simulator/main.go > /tmp/sensor-simulator.log 2>&1 &
-SIMULATOR_PID=$!
-echo "sensor-simulator" > /tmp/smart-city-pids.txt
-echo $SIMULATOR_PID >> /tmp/smart-city-pids.txt
-
-# Wait a bit
-sleep 3
-
-# Start data ingestion in background
-echo "   Starting Data Ingestion Service..."
-go run cmd/data-ingestion/main.go > /tmp/data-ingestion.log 2>&1 &
-INGESTION_PID=$!
-echo "data-ingestion" >> /tmp/smart-city-pids.txt
-echo $INGESTION_PID >> /tmp/smart-city-pids.txt
-
-cd ..
+echo "6. Verifying application service containers..."
+for service in sensor-simulator data-ingestion alert-monitor api-gateway; do
+    if docker ps --format "{{.Names}}" | grep -q "^${service}$"; then
+        echo "   ✓ ${service} container is running"
+    else
+        echo "   ⚠️  ${service} container is not running"
+    fi
+done
 
 echo ""
 echo "========================================="
@@ -80,20 +73,16 @@ echo "  ✓ Kafka + Zookeeper"
 echo "  ✓ API Gateway"
 echo "  ✓ Alert Monitor"
 echo ""
-echo "Application Service PIDs:"
-echo "  Sensor Simulator:   $SIMULATOR_PID"
-echo "  Data Ingestion:     $INGESTION_PID"
-echo ""
 echo "Logs:"
 echo "  API Gateway:    docker logs -f api-gateway"
 echo "  Alert Monitor:  docker logs -f alert-monitor"
-echo "  Simulator:      /tmp/sensor-simulator.log"
-echo "  Ingestion:      /tmp/data-ingestion.log"
+echo "  Simulator:      docker logs -f sensor-simulator"
+echo "  Ingestion:      docker logs -f data-ingestion"
 echo ""
 echo "Web UIs:"
 echo "  API Gateway:      http://localhost:8080/health"
-echo "  Kafka UI:         http://localhost:8081"
-echo "  Redis Commander:  http://localhost:8082"
+echo "  Kafka UI:         http://localhost:8081 (if enabled in docker-compose)"
+echo "  Redis Commander:  http://localhost:8082 (if enabled in docker-compose)"
 echo ""
 echo "API Documentation:"
 echo "  See docs/API.md or docs/POSTMAN_GUIDE.md"

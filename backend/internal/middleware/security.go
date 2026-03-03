@@ -29,7 +29,7 @@ func SecurityHeaders() fiber.Handler {
 			"style-src 'self' 'unsafe-inline'",
 			"img-src 'self' data: https:",
 			"font-src 'self'",
-			"connect-src 'self'",
+			"connect-src 'self' http://localhost:* ws://localhost:*",
 			"frame-ancestors 'none'",
 			"base-uri 'self'",
 			"form-action 'self'",

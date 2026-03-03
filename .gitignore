@@ -21,8 +21,22 @@ logs/
 *.test
 *.out
 go.work
+go.work.sum
 coverage.out
 coverage.html
+
+# Go profiling / benchmarking
+cpu.out
+mem.out
+*.pprof
+*.prof
+__debug_bin*
+
+# Compiled backend service binaries (built in-place)
+backend/api-gateway
+backend/data-ingestion
+backend/sensor-simulator
+backend/alert-monitor
 
 # IDE
 .vscode/
@@ -75,3 +89,13 @@ frontend/yarn-error.log*
 # Kubernetes secrets (if any)
 k8s/secrets/
 k8s/*.secret.yaml
+backend/k8s/secrets/
+backend/k8s/*.secret.yaml
+
+# Air (hot-reload) temp files
+tmp/
+.air/
+
+# Test fixtures / scratch files
+*.scratch
+intention.md

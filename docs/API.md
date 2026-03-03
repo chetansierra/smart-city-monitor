@@ -18,7 +18,7 @@
    - [Readings](#readings)
    - [Analytics](#analytics)
    - [Alerts](#alerts)
-   - [WebSocket](#websocket)
+   - [SSE](#sse)
 
 ---
 
@@ -27,7 +27,7 @@
 The Smart City Monitor API provides real-time access to environmental sensor data across a city. It includes:
 
 - **21 REST API endpoints**
-- **1 WebSocket endpoint** for real-time updates
+- **1 SSE endpoint** for real-time updates
 - **4 sensor types**: Temperature, Pollution, Humidity, Noise
 - **Real-time alerts** when environmental thresholds are exceeded
 
@@ -758,65 +758,37 @@ curl -X POST http://localhost:8080/api/v1/alerts/123/acknowledge \
 
 ---
 
-### WebSocket
+### SSE
 
-#### `GET /ws`
+#### `GET /stream`
 
-WebSocket endpoint for real-time sensor updates and alerts.
+SSE endpoint for real-time sensor updates and alerts.
 
 **Connection:**
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/ws');
+const eventSource = new EventSource('http://localhost:8080/stream?session_id=<session-id>');
 ```
 
-**Client → Server Messages:**
+**Client handling:**
 
-**Subscribe to sensor:**
-```json
-{
-  "action": "subscribe",
-  "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-}
+```javascript
+eventSource.onopen = () => {
+  console.log('SSE connection established');
+};
+
+eventSource.onmessage = (event) => {
+  const payload = JSON.parse(event.data);
+  console.log(payload.type, payload.data);
+};
+
+eventSource.onerror = (err) => {
+  console.error('SSE error', err);
+};
 ```
 
-**Subscribe to all sensors:**
-```json
-{
-  "action": "subscribe",
-  "sensor_id": "all"
-}
-```
+**Server payloads:**
 
-**Unsubscribe:**
-```json
-{
-  "action": "unsubscribe",
-  "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-}
-```
-
-**Ping:**
-```json
-{
-  "action": "ping"
-}
-```
-
-**Server → Client Messages:**
-
-**Subscription confirmation:**
-```json
-{
-  "type": "response",
-  "success": true,
-  "action": "subscribed",
-  "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "timestamp": "2025-11-19T21:30:00Z"
-}
-```
-
-**Sensor update:**
 ```json
 {
   "type": "sensor_update",
@@ -847,29 +819,11 @@ const ws = new WebSocket('ws://localhost:8080/ws');
 }
 ```
 
-**Error:**
-```json
-{
-  "type": "error",
-  "success": false,
-  "message": "Invalid message format",
-  "timestamp": "2025-11-19T21:30:00Z"
-}
-```
-
-**Pong:**
-```json
-{
-  "type": "pong",
-  "timestamp": "2025-11-19T21:30:00Z"
-}
-```
-
-**WebSocket Stats:**
+**SSE Stats:**
 
 ```bash
-# Get WebSocket connection statistics
-curl http://localhost:8080/ws/stats
+# Get SSE connection statistics
+curl http://localhost:8080/stream/stats
 ```
 
 ---
@@ -878,7 +832,7 @@ curl http://localhost:8080/ws/stats
 
 **Coming in v1.1:**
 - 100 requests per minute per IP address
-- WebSocket: 100 messages per minute per connection
+- SSE: 100 messages per minute per connection
 
 ---
 
@@ -887,7 +841,7 @@ curl http://localhost:8080/ws/stats
 1. **Timestamps**: Always use RFC3339 format (e.g., `2025-11-19T21:30:00Z`)
 2. **Pagination**: Use pagination for large datasets
 3. **Caching**: Take advantage of cached endpoints for better performance
-4. **WebSocket**: Subscribe only to sensors you need to reduce bandwidth
+4. **SSE**: Subscribe only to sensors you need to reduce bandwidth
 5. **Error Handling**: Always check the `success` field in responses
 
 ---

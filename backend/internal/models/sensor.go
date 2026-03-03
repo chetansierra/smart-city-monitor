@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ type Location struct {
 // Sensor represents a physical sensor device
 type Sensor struct {
 	ID        uuid.UUID    `json:"id" db:"id"`
+	SessionID *uuid.UUID   `json:"session_id,omitempty" db:"session_id"`
 	Name      string       `json:"name" db:"name"`
 	Type      SensorType   `json:"type" db:"type"`
 	Location  Location     `json:"location"`
@@ -49,6 +51,7 @@ type Sensor struct {
 type SensorReading struct {
 	ID         int64      `json:"id,omitempty" db:"id"`
 	SensorID   uuid.UUID  `json:"sensor_id" db:"sensor_id"`
+	SessionID  *uuid.UUID `json:"session_id,omitempty" db:"session_id"`
 	SensorType SensorType `json:"sensor_type" db:"sensor_type"`
 	Value      float64    `json:"value" db:"value"`
 	Unit       string     `json:"unit" db:"unit"`
@@ -58,9 +61,22 @@ type SensorReading struct {
 	Timestamp  time.Time  `json:"timestamp" db:"timestamp"`
 }
 
+// MarshalJSON customizes JSON serialization to ensure consistent timestamp format
+func (s *SensorReading) MarshalJSON() ([]byte, error) {
+	type Alias SensorReading
+	return json.Marshal(&struct {
+		*Alias
+		Timestamp string `json:"timestamp"`
+	}{
+		Alias:     (*Alias)(s),
+		Timestamp: s.Timestamp.Format(time.RFC3339Nano),
+	})
+}
+
 // KafkaMessage represents the message format for Kafka
 type KafkaMessage struct {
 	SensorID   string   `json:"sensor_id"`
+	SessionID  string   `json:"session_id,omitempty"`
 	SensorType string   `json:"sensor_type"`
 	Value      float64  `json:"value"`
 	Unit       string   `json:"unit"`
@@ -68,23 +84,11 @@ type KafkaMessage struct {
 	Timestamp  string   `json:"timestamp"`
 }
 
-// Alert represents a sensor alert/notification
-type Alert struct {
-	ID           int64     `json:"id" db:"id"`
-	SensorID     uuid.UUID `json:"sensor_id" db:"sensor_id"`
-	AlertType    string    `json:"alert_type" db:"alert_type"`
-	Severity     string    `json:"severity" db:"severity"`
-	Message      string    `json:"message" db:"message"`
-	Value        float64   `json:"value" db:"value"`
-	Threshold    float64   `json:"threshold" db:"threshold"`
-	Timestamp    time.Time `json:"timestamp" db:"timestamp"`
-	Acknowledged bool      `json:"acknowledged" db:"acknowledged"`
-}
-
 // SensorAggregate represents aggregated sensor data
 type SensorAggregate struct {
 	ID              int64      `json:"id" db:"id"`
 	SensorID        uuid.UUID  `json:"sensor_id" db:"sensor_id"`
+	SessionID       *uuid.UUID `json:"session_id,omitempty" db:"session_id"`
 	SensorType      SensorType `json:"sensor_type" db:"sensor_type"`
 	AggregationType string     `json:"aggregation_type" db:"aggregation_type"` // hourly, daily
 	AvgValue        float64    `json:"avg_value" db:"avg_value"`

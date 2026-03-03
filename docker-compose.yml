@@ -13,13 +13,19 @@ services:
       - zookeeper-logs:/var/lib/zookeeper/log
     networks:
       - smart-city-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Kafka Broker
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
       - "9093:9093"
@@ -38,21 +44,26 @@ services:
       - kafka-data:/var/lib/kafka/data
     networks:
       - smart-city-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Kafka UI - Web interface for Kafka
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    depends_on:
-      - kafka
-    ports:
-      - "8081:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: smart-city-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
-    networks:
-      - smart-city-network
+  # kafka-ui:
+  #   image: provectuslabs/kafka-ui:latest
+  #   container_name: kafka-ui
+  #   depends_on:
+  #     - kafka
+  #   ports:
+  #     - "8081:8080"
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: smart-city-cluster
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+  #     KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+  #   networks:
+  #     - smart-city-network
 
   # PostgreSQL Database
   postgres:
@@ -83,7 +94,7 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-ttl
     networks:
       - smart-city-network
     healthcheck:
@@ -92,20 +103,36 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis Commander - Web UI for Redis (optional)
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: redis-commander
+  # Adminer - PostgreSQL web UI
+  adminer:
+    image: adminer:latest
+    container_name: adminer
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
     ports:
-      - "8082:8081"
+      - "8083:8080"
     environment:
-      REDIS_HOSTS: local:redis:6379
+      ADMINER_DEFAULT_SERVER: postgres
     networks:
       - smart-city-network
+    restart: unless-stopped
 
-  # API Gateway - REST API and WebSocket server
+  # Redis Commander - Web UI for Redis (optional)
+  # redis-commander:
+  #   image: rediscommander/redis-commander:latest
+  #   container_name: redis-commander
+  #   platform: linux/amd64
+  #   depends_on:
+  #     - redis
+  #   ports:
+  #     - "8082:8081"
+  #   environment:
+  #     REDIS_HOSTS: local:redis:6379
+  #   networks:
+  #     - smart-city-network
+
+  # API Gateway - REST API and SSE server
   api-gateway:
     build:
       context: ./backend
@@ -117,26 +144,26 @@ services:
       redis:
         condition: service_healthy
       kafka:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
-      APP_ENVIRONMENT: production
-      APP_LOG_LEVEL: info
+      ENVIRONMENT: production
+      LOG_LEVEL: info
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_DATABASE: smart_city
+      POSTGRES_DB: smart_city
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
-      POSTGRES_SSL_MODE: disable
+      POSTGRES_SSLMODE: disable
       POSTGRES_MAX_CONNECTIONS: 25
       POSTGRES_MAX_IDLE_CONNECTIONS: 5
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ""
       REDIS_DB: 0
       KAFKA_BROKERS: kafka:9093
-      KAFKA_TOPIC_READINGS: sensor-readings
-      KAFKA_TOPIC_ALERTS: alerts
+      KAFKA_TOPIC_SENSOR_READINGS: sensor-readings
+      KAFKA_TOPIC_ADMIN_COMMANDS: admin-commands
     networks:
       - smart-city-network
     restart: unless-stopped
@@ -146,40 +173,97 @@ services:
       timeout: 10s
       retries: 3
 
-  # Alert Monitor - Monitors sensor readings and generates alerts
-  alert-monitor:
+  # Data Ingestion - Consumes raw sensor data and stores it in Postgres
+  data-ingestion:
     build:
       context: ./backend
-      dockerfile: Dockerfile.alert-monitor
-    container_name: alert-monitor
+      dockerfile: Dockerfile.data-ingestion
+    container_name: data-ingestion
     depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: info
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: smart_city
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_SSLMODE: disable
+      POSTGRES_MAX_CONNECTIONS: 25
+      POSTGRES_MAX_IDLE_CONNECTIONS: 5
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_TOPIC_SENSOR_READINGS: sensor-readings
+      KAFKA_CONSUMER_GROUP_INGESTION: data-ingestion-group
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+    networks:
+      - smart-city-network
+    restart: unless-stopped
+
+  # Sensor Simulator - Generates mock sensor data
+  sensor-simulator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.sensor-simulator
+    container_name: sensor-simulator
+    depends_on:
+      kafka:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_started
     environment:
-      APP_ENVIRONMENT: production
-      APP_LOG_LEVEL: info
+      ENVIRONMENT: production
+      LOG_LEVEL: info
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_DATABASE: smart_city
+      POSTGRES_DB: smart_city
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
-      POSTGRES_SSL_MODE: disable
-      POSTGRES_MAX_CONNECTIONS: 10
-      POSTGRES_MAX_IDLE_CONNECTIONS: 2
+      POSTGRES_SSLMODE: disable
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_TOPIC_SENSOR_READINGS: sensor-readings
+      SENSOR_COUNT: 50
+      GENERATION_INTERVAL_MS: 1000
+      SIMULATOR_START_EMPTY: "false"
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ""
       REDIS_DB: 0
-      KAFKA_BROKERS: kafka:9093
-      KAFKA_TOPIC_READINGS: sensor-readings
-      KAFKA_TOPIC_ALERTS: alerts
-      KAFKA_CONSUMER_GROUP: alert-monitor-group
     networks:
       - smart-city-network
     restart: unless-stopped
+
+  # Frontend - React dashboard with nginx
+  # Commented out for local development (run with npm run dev in ./frontend)
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: frontend
+  #   depends_on:
+  #     api-gateway:
+  #       condition: service_healthy
+  #   ports:
+  #     - "3000:80"
+  #   environment:
+  #     - VITE_API_URL=http://localhost:8080/api/v1
+  #     - VITE_STREAM_URL=http://localhost:8080/stream
+  #   networks:
+  #     - smart-city-network
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+  #     interval: 30s
+  #     timeout: 3s
+  #     retries: 3
 
 networks:
   smart-city-network:

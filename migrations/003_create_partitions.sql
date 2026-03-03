@@ -1,24 +1,28 @@
 -- Create monthly partitions for sensor_readings
--- Current month and next 2 months
+-- Current month and future months
 
--- November 2024
-CREATE TABLE IF NOT EXISTS sensor_readings_2024_11 PARTITION OF sensor_readings
-    FOR VALUES FROM ('2024-11-01') TO ('2024-12-01');
-
--- December 2024
-CREATE TABLE IF NOT EXISTS sensor_readings_2024_12 PARTITION OF sensor_readings
-    FOR VALUES FROM ('2024-12-01') TO ('2025-01-01');
-
--- January 2025
+-- 2025 Partitions
 CREATE TABLE IF NOT EXISTS sensor_readings_2025_01 PARTITION OF sensor_readings
     FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
 
--- February 2025
 CREATE TABLE IF NOT EXISTS sensor_readings_2025_02 PARTITION OF sensor_readings
     FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
 
+-- 2026 Partitions (Current Year)
+CREATE TABLE IF NOT EXISTS sensor_readings_2026_01 PARTITION OF sensor_readings
+    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+
+CREATE TABLE IF NOT EXISTS sensor_readings_2026_02 PARTITION OF sensor_readings
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+
+CREATE TABLE IF NOT EXISTS sensor_readings_2026_03 PARTITION OF sensor_readings
+    FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+
+-- Default partition to prevent crashes
+CREATE TABLE IF NOT EXISTS sensor_readings_default PARTITION OF sensor_readings DEFAULT;
+
 -- Add comments
-COMMENT ON TABLE sensor_readings_2024_11 IS 'Partition for November 2024 sensor readings';
-COMMENT ON TABLE sensor_readings_2024_12 IS 'Partition for December 2024 sensor readings';
-COMMENT ON TABLE sensor_readings_2025_01 IS 'Partition for January 2025 sensor readings';
-COMMENT ON TABLE sensor_readings_2025_02 IS 'Partition for February 2025 sensor readings';
+COMMENT ON TABLE sensor_readings_2026_01 IS 'Partition for January 2026 sensor readings';
+COMMENT ON TABLE sensor_readings_2026_02 IS 'Partition for February 2026 sensor readings';
+COMMENT ON TABLE sensor_readings_2026_03 IS 'Partition for March 2026 sensor readings';
+COMMENT ON TABLE sensor_readings_default IS 'Default partition for sensor readings';

@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -277,76 +276,6 @@ func TestGetQuietest(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, 200, resp.StatusCode)
-}
-
-// Test Alerts Endpoints
-func TestGetAllAlerts(t *testing.T) {
-	if !isAPIAvailable() {
-		t.Skip("API is not running")
-	}
-
-	resp := makeRequest(t, "GET", "/api/v1/alerts", nil)
-	defer resp.Body.Close()
-
-	assert.Equal(t, 200, resp.StatusCode)
-
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	json.Unmarshal(body, &result)
-
-	assert.True(t, result["success"].(bool))
-}
-
-func TestGetAlertsWithFilters(t *testing.T) {
-	if !isAPIAvailable() {
-		t.Skip("API is not running")
-	}
-
-	tests := []struct {
-		name     string
-		queryStr string
-	}{
-		{"Active alerts", "/api/v1/alerts?active=true"},
-		{"By severity", "/api/v1/alerts?severity=high"},
-		{"With pagination", "/api/v1/alerts?page=1&limit=10"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := makeRequest(t, "GET", tt.queryStr, nil)
-			defer resp.Body.Close()
-
-			assert.Equal(t, 200, resp.StatusCode)
-		})
-	}
-}
-
-func TestAcknowledgeAlert(t *testing.T) {
-	if !isAPIAvailable() {
-		t.Skip("API is not running")
-	}
-
-	// First get an alert
-	resp := makeRequest(t, "GET", "/api/v1/alerts?limit=1", nil)
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	json.Unmarshal(body, &result)
-	resp.Body.Close()
-
-	if data, ok := result["data"].([]interface{}); ok && len(data) > 0 {
-		if alert, ok := data[0].(map[string]interface{}); ok {
-			alertID := alert["id"].(string)
-
-			// Acknowledge the alert
-			ackBody := map[string]string{"acknowledged_by": "test_user"}
-			ackJSON, _ := json.Marshal(ackBody)
-
-			resp = makeRequest(t, "POST", "/api/v1/alerts/"+alertID+"/acknowledge", bytes.NewReader(ackJSON))
-			defer resp.Body.Close()
-
-			assert.Equal(t, 200, resp.StatusCode)
-		}
-	}
 }
 
 // Test Error Cases

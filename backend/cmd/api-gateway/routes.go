@@ -5,27 +5,19 @@ import (
 	"github.com/chetansierra/smart-city-monitor/internal/middleware"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/websocket/v2"
 )
 
 // setupRoutes configures all API routes
-func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsHandler *handlers.SensorsHandler, readingsHandler *handlers.ReadingsHandler, analyticsHandler *handlers.AnalyticsHandler, alertsHandler *handlers.AlertsHandler, wsHandler *handlers.WebSocketHandler, redisClient *redis.Client) {
+func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsHandler *handlers.SensorsHandler, readingsHandler *handlers.ReadingsHandler, analyticsHandler *handlers.AnalyticsHandler, sseHandler *handlers.SSEHandler, metricsHandler *handlers.MetricsHandler, adminHandler *handlers.AdminHandler, pipelineHandler *handlers.PipelineHandler, redisClient *redis.Client) {
 	// Health check endpoint
 	app.Get("/health", healthHandler.Check)
 
-	// WebSocket stats endpoint (before WebSocket middleware)
-	app.Get("/ws/stats", wsHandler.GetStats)
+	// SSE stats endpoint
+	app.Get("/stream/stats", sseHandler.GetStats)
+	app.Get("/api/v1/stream/history", sseHandler.GetSessionHistory)
 
-	// WebSocket endpoint
-	app.Use("/ws", func(c *fiber.Ctx) error {
-		// IsWebSocketUpgrade returns true if the client requested upgrade to the WebSocket protocol
-		if websocket.IsWebSocketUpgrade(c) {
-			c.Locals("allowed", true)
-			return c.Next()
-		}
-		return fiber.ErrUpgradeRequired
-	})
-	app.Get("/ws", websocket.New(wsHandler.HandleConnection))
+	// SSE streaming endpoint
+	app.Get("/stream", sseHandler.HandleStream)
 
 	// API v1 routes
 	v1 := app.Group("/api/v1")
@@ -36,10 +28,17 @@ func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsH
 	// Sensor routes
 	sensors := v1.Group("/sensors")
 	sensors.Get("/", sensorsHandler.ListAll)                    // GET /api/v1/sensors
+	sensors.Get("/footprint", sensorsHandler.GetFootprint)      // GET /api/v1/sensors/footprint
+	sensors.Post("/start", sensorsHandler.StartSensor)          // POST /api/v1/sensors/start
+	sensors.Delete("/:id", sensorsHandler.DeleteSensor)         // DELETE /api/v1/sensors/:id
 	sensors.Get("/:id", sensorsHandler.GetByID)                 // GET /api/v1/sensors/:id
 	sensors.Get("/:id/latest", sensorsHandler.GetLatest)        // GET /api/v1/sensors/:id/latest
 	sensors.Get("/:id/readings", readingsHandler.GetBySensorID) // GET /api/v1/sensors/:id/readings
-	sensors.Get("/:id/alerts", alertsHandler.GetBySensorID)     // GET /api/v1/sensors/:id/alerts
+
+	// Session routes
+	session := v1.Group("/session")
+	session.Get("/config", sensorsHandler.GetSessionConfig)    // GET /api/v1/session/config
+	session.Put("/config", sensorsHandler.UpdateSessionConfig) // PUT /api/v1/session/config
 
 	// Readings routes
 	readings := v1.Group("/readings")
@@ -53,10 +52,45 @@ func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsH
 	analytics.Get("/top-polluted", analyticsHandler.GetTopPolluted)             // GET /api/v1/analytics/top-polluted
 	analytics.Get("/top-temperature", analyticsHandler.GetTopTemperature)       // GET /api/v1/analytics/top-temperature
 	analytics.Get("/quietest", analyticsHandler.GetQuietest)                    // GET /api/v1/analytics/quietest
+	analytics.Get("/hourly", analyticsHandler.GetHourlyAggregations)            // GET /api/v1/analytics/hourly
+	analytics.Get("/compare", analyticsHandler.GetComparisonData)               // GET /api/v1/analytics/compare
+	analytics.Get("/zones", analyticsHandler.GetZoneAnalytics)                  // GET /api/v1/analytics/zones
 
-	// Alerts routes
-	alerts := v1.Group("/alerts")
-	alerts.Get("/", alertsHandler.GetAll)                      // GET /api/v1/alerts
-	alerts.Get("/:id", alertsHandler.GetByID)                  // GET /api/v1/alerts/:id
-	alerts.Post("/:id/acknowledge", alertsHandler.Acknowledge) // POST /api/v1/alerts/:id/acknowledge
+	// Metrics routes
+	metrics := v1.Group("/metrics")
+	metrics.Get("/kafka", metricsHandler.GetKafkaMetrics)  // GET /api/v1/metrics/kafka
+	metrics.Get("/redis", metricsHandler.GetRedisMetrics)  // GET /api/v1/metrics/redis
+	metrics.Get("/system", metricsHandler.GetSystemHealth) // GET /api/v1/metrics/system
+	metrics.Get("/nerds", metricsHandler.GetNerdStats)     // GET /api/v1/metrics/nerds
+	metrics.Get("/nerds/global", metricsHandler.GetNerdStats)
+	metrics.Get("/nerds/session", metricsHandler.GetSessionNerdStats)
+
+	// Pipeline visualization routes
+	pipeline := v1.Group("/pipeline")
+	pipeline.Get("/flow/stats", pipelineHandler.GetDataFlowStats)                   // GET /api/v1/pipeline/flow/stats
+	pipeline.Get("/kafka/topics", pipelineHandler.GetKafkaTopics)                   // GET /api/v1/pipeline/kafka/topics
+	pipeline.Get("/kafka/topics/:topic", pipelineHandler.GetKafkaTopicDetail)       // GET /api/v1/pipeline/kafka/topics/:topic
+	pipeline.Get("/kafka/topics/:topic/messages", pipelineHandler.GetKafkaMessages) // GET /api/v1/pipeline/kafka/topics/:topic/messages
+	pipeline.Get("/redis/keys", pipelineHandler.GetRedisKeys)                       // GET /api/v1/pipeline/redis/keys
+	pipeline.Get("/redis/keys/:key", pipelineHandler.GetRedisKeyDetail)             // GET /api/v1/pipeline/redis/keys/:key
+	pipeline.Get("/stream/connections", sseHandler.GetStats)                        // GET /api/v1/pipeline/stream/connections
+
+	// Admin routes
+	admin := v1.Group("/admin")
+	admin.Post("/sensors/control", adminHandler.ControlSensors)                 // POST /api/v1/admin/sensors/control
+	admin.Post("/sensors/start-all", adminHandler.StartAllSensors)              // POST /api/v1/admin/sensors/start-all
+	admin.Post("/sensors/stop-all", adminHandler.StopAllSensors)                // POST /api/v1/admin/sensors/stop-all
+	admin.Post("/simulation/rate", adminHandler.SetSimulationRate)              // POST /api/v1/admin/simulation/rate
+	admin.Get("/simulation/status", adminHandler.GetSimulationStatus)           // GET /api/v1/admin/simulation/status
+	admin.Post("/system/clear-cache", adminHandler.ClearRedisCache)             // POST /api/v1/admin/system/clear-cache
+	admin.Post("/system/reset", adminHandler.ResetSimulation)                   // POST /api/v1/admin/system/reset
+	admin.Get("/scenarios", adminHandler.GetScenarios)                          // GET /api/v1/admin/scenarios
+	admin.Post("/scenarios/activate", adminHandler.ActivateScenario)            // POST /api/v1/admin/scenarios/activate
+	admin.Get("/scenarios/current", adminHandler.GetCurrentScenario)            // GET /api/v1/admin/scenarios/current
+	admin.Get("/simulation/config", adminHandler.GetSimulationConfig)           // GET /api/v1/admin/simulation/config
+	admin.Post("/simulation/threshold", adminHandler.SetSensorThreshold)        // POST /api/v1/admin/simulation/threshold
+	admin.Post("/simulation/behavior", adminHandler.SetSensorBehavior)          // POST /api/v1/admin/simulation/behavior
+	admin.Post("/simulation/time-compression", adminHandler.SetTimeCompression) // POST /api/v1/admin/simulation/time-compression
+	admin.Post("/simulation/chaos-mode", adminHandler.SetChaosMode)             // POST /api/v1/admin/simulation/chaos-mode
+	admin.Post("/simulation/reset-config", adminHandler.ResetSimulationConfig)  // POST /api/v1/admin/simulation/reset-config
 }

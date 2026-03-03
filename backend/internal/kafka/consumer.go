@@ -45,31 +45,25 @@ func NewConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	}, nil
 }
 
-// Consume starts consuming messages from Kafka
+// Consume starts consuming messages from Kafka and blocks until the context is cancelled
 func (c *Consumer) Consume(ctx context.Context, topics []string, handler MessageHandler) error {
-	consumerHandler := &consumerGroupHandler{
-		ready:   c.ready,
-		handler: handler,
-	}
-
-	go func() {
-		for {
-			if err := c.consumer.Consume(ctx, topics, consumerHandler); err != nil {
-				log.Printf("Error from consumer: %v", err)
-			}
-
-			// Check if context was cancelled
-			if ctx.Err() != nil {
-				return
-			}
-
-			c.ready = make(chan bool)
+	for {
+		consumerHandler := &consumerGroupHandler{
+			ready:   c.ready,
+			handler: handler,
 		}
-	}()
 
-	<-c.ready
-	log.Println("Kafka consumer is ready")
-	return nil
+		if err := c.consumer.Consume(ctx, topics, consumerHandler); err != nil {
+			return fmt.Errorf("error from consumer: %w", err)
+		}
+
+		// Check if context was cancelled
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		c.ready = make(chan bool)
+	}
 }
 
 // Close closes the consumer

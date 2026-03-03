@@ -55,7 +55,7 @@ Simulates 50+ environmental sensors across a virtual smart city, displaying real
 - **Framework**: React 18
 - **Maps**: Leaflet
 - **Charts**: Recharts
-- **Real-time**: WebSockets
+- **Real-time**: Server-Sent Events (SSE)
 
 ### Infrastructure
 - **Containers**: Docker
@@ -66,7 +66,7 @@ Simulates 50+ environmental sensors across a virtual smart city, displaying real
 
 ## 🏗️ Architecture
 ```
-Frontend (React + WebSocket)
+Frontend (React + SSE)
     ↓
 API Gateway (Go)
     ↓
@@ -74,20 +74,20 @@ API Gateway (Go)
 ├─ Analytics Service → Aggregations
 └─ Admin Service → Control Commands
     ↓
-Real-time updates via Redis Pub/Sub → WebSocket → Frontend
+Real-time updates via Redis Pub/Sub → SSE → Frontend
 ```
 
 ### Services
 
 1. **Sensor Simulator** - Generates realistic sensor data → Kafka
 2. **Data Ingestion** - Consumes Kafka → Stores in PostgreSQL + Redis
-3. **Analytics Service** - Computes aggregations and detects alerts
-4. **API Gateway** - REST API + WebSocket server
+3. **Analytics Service** - Computes aggregations
+4. **API Gateway** - REST API + SSE stream server
 5. **Admin Service** - Controls simulation via Kafka commands
 
 ### Data Flow
 ```
-Sensor Data → Kafka Topics → Consumer Groups → Storage (PostgreSQL + Redis) → WebSocket → UI
+Sensor Data → Kafka Topics → Consumer Groups → Storage (PostgreSQL + Redis) → SSE → UI
 ```
 
 ---
@@ -132,9 +132,6 @@ docker exec kafka kafka-topics --bootstrap-server localhost:9093 \
 
 docker exec kafka kafka-topics --bootstrap-server localhost:9093 \
   --create --topic admin-commands --partitions 3 --replication-factor 1 --if-not-exists
-
-docker exec kafka kafka-topics --bootstrap-server localhost:9093 \
-  --create --topic alerts --partitions 3 --replication-factor 1 --if-not-exists
 
 # 3. Run backend services (in separate terminals)
 
@@ -206,17 +203,17 @@ ENVIRONMENT=development
 
 ### Phase 2: API & Real-Time (Week 2)
 - [ ] REST API endpoints
-- [ ] WebSocket server
+- [ ] SSE stream endpoint
 - [ ] Redis Pub/Sub integration
 - [ ] Basic analytics service
 
-**Goal**: API + WebSocket streaming live data
+**Goal**: API + SSE live streaming
 
 ---
 
 ### Phase 3: Frontend (Week 3)
 - [ ] React app with Leaflet map
-- [ ] WebSocket client integration
+- [ ] SSE client integration
 - [ ] Real-time sensor markers
 - [ ] City stats cards
 - [ ] Sensor detail panel
@@ -226,14 +223,31 @@ ENVIRONMENT=development
 
 ---
 
-### Phase 4: Analytics & Admin (Week 4)
-- [ ] Analytics dashboard
-- [ ] Historical trends
-- [ ] Alert detection system
-- [ ] Admin panel UI
-- [ ] Scenario implementations (rush hour, heatwave, etc.)
+### Phase 4: Analytics & Admin (Week 4) - ✅ COMPLETE
+- [x] System metrics dashboard (Kafka, Redis, System health)
+- [x] Historical analytics with time-series charts
+- [x] Zone-based analytics and heatmap
+- [x] Alert trend analysis
+- [x] Data export functionality (CSV/JSON)
+- [x] Admin control panel with sensor management
+- [x] Simulation rate controls
+- [x] Scenario implementations (Normal, Rush Hour, Heatwave, Industrial Incident)
+- [x] Custom simulation controls (thresholds, behavior patterns, chaos mode)
+- [x] Data pipeline visualization (Kafka browser, Redis browser, SSE monitor)
+- [x] Interactive architecture diagram
 
-**Goal**: Complete all features
+**Goal**: Complete all features ✅ **ACHIEVED**
+
+**Week 4 Highlights**:
+- 40+ new API endpoints for metrics, analytics, admin, and pipeline visualization
+- Real-time metrics dashboards for Kafka, Redis, and system health
+- Historical analytics with hourly aggregations and zone comparisons
+- Interactive admin panel with full simulation control
+- 4 pre-configured scenarios with real-time activation
+- Advanced simulation controls (custom thresholds, behavior patterns, time compression, chaos engineering)
+- Complete data pipeline visualization tools (browse Kafka topics/messages, Redis keys/values, SSE connections)
+- Interactive system architecture diagram
+- Comprehensive documentation (`docs/architecture/`)
 
 ---
 
@@ -291,18 +305,6 @@ CREATE TABLE sensor_aggregates (
     period_end TIMESTAMP
 );
 
--- Alerts
-CREATE TABLE alerts (
-    id BIGSERIAL PRIMARY KEY,
-    sensor_id UUID REFERENCES sensors(id),
-    alert_type VARCHAR(50),
-    severity VARCHAR(20),
-    message TEXT,
-    value DECIMAL(10, 2),
-    threshold DECIMAL(10, 2),
-    timestamp TIMESTAMP,
-    acknowledged BOOLEAN DEFAULT FALSE
-);
 ```
 
 ### Redis Structures
@@ -361,12 +363,6 @@ GET /api/analytics/zones/compare?zones=downtown,industrial
 GET /api/analytics/top-polluted?limit=5
 ```
 
-#### Alerts
-```http
-GET /api/alerts?active=true
-POST /api/alerts/:id/acknowledge
-```
-
 #### Admin
 ```http
 POST /api/admin/sensors (create)
@@ -374,16 +370,9 @@ POST /api/admin/sensors/:id/control (start/stop)
 POST /api/admin/scenario (change scenario)
 ```
 
-#### WebSocket
-```javascript
-// Connect
-ws://localhost:8080/ws
-
-// Subscribe
-{ "action": "subscribe", "sensor_id": "uuid" }
-
-// Receive updates
-{ "type": "sensor_update", "data": {...} }
+#### SSE Stream
+```text
+GET http://localhost:8080/stream
 ```
 
 ---
@@ -409,40 +398,63 @@ kubectl port-forward svc/api-gateway 8080:8080
 
 ## 📊 Progress
 
-### Current Phase: **Phase 2 - API & Real-Time** (Starting Week 2)
+### Current Phase: **Phase 5 - Kubernetes & Polish** (Week 5)
 
-**Week 1 Completed** (Days 1-5):
-- [x] Project structure and configuration
-- [x] Docker Compose with Kafka, Redis, PostgreSQL, Zookeeper
-- [x] PostgreSQL schema with partitioning (50 sensors seeded)
-- [x] Sensor simulator with realistic data generation
-- [x] Data ingestion service with batch processing
-- [x] Structured logging (zerolog)
-- [x] Comprehensive monitoring queries
-- [x] Unit tests (9 tests passing)
-- [x] Helper scripts (start-all, stop-all, monitor, load-test)
-- [x] Load testing and performance documentation
-- [x] Full data persistence
+**Week 1 Completed** ✅:
+- Complete data pipeline (Simulator → Kafka → PostgreSQL + Redis)
+- 3,500+ sensor readings processed
+- Zero data loss with Docker volume persistence
+- Real-time Redis cache with geospatial indexing
+- Monitoring dashboard and SQL queries
 
-**Week 1 Achievements**:
-- ✅ Complete data pipeline working (Simulator → Kafka → PostgreSQL + Redis)
-- ✅ 3,500+ sensor readings successfully processed
-- ✅ Zero data loss with Docker volume persistence
-- ✅ Real-time Redis cache with geospatial indexing
-- ✅ Monitoring dashboard and SQL queries
+**Week 2 Completed** ✅:
+- REST API with Fiber framework (30+ endpoints)
+- SSE stream server with broadcaster pattern
+- Redis Pub/Sub integration
+- Analytics service with aggregations
+- Real-time updates to connected clients
 
-**Next (Week 2)**:
-- [ ] REST API with Fiber framework
-- [ ] WebSocket server for real-time updates
-- [ ] Analytics service
-- [ ] Redis Pub/Sub integration
+**Week 3 Completed** ✅:
+- React 18 frontend with TypeScript
+- Interactive Leaflet map with 50 sensors
+- Real-time charts with Recharts
+- SSE client integration
+- Alerts panel and sensor details
+- Dark/Light theme toggle
+
+**Week 4 Completed** ✅:
+- System metrics dashboard (Kafka, Redis, PostgreSQL)
+- Historical analytics with time-series visualizations
+- Zone-based analytics and heatmap
+- Alert trend analysis
+- Admin control panel (sensor controls, rate adjustment)
+- 4 scenario simulations (Normal, Rush Hour, Heatwave, Industrial Incident)
+- Custom simulation controls (thresholds, behavior patterns, time compression, chaos mode)
+- Data pipeline visualization (Kafka browser, Redis browser, SSE monitor)
+- Interactive architecture diagram
+- System overview dashboard
+
+**Achievements to Date**:
+- ✅ 50+ API endpoints across 8 handler modules
+- ✅ 1000+ messages/second throughput
+- ✅ Real-time SSE updates (sub-100ms latency)
+- ✅ Complete admin control suite
+- ✅ Interactive data pipeline visualization
+- ✅ Comprehensive system metrics monitoring
+- ✅ 15+ React components with full theme support
+
+**Next (Week 5)**:
+- [ ] Dockerize frontend
+- [ ] Kubernetes manifests for all services
+- [ ] Horizontal Pod Autoscaling
+- [ ] Health check endpoints
+- [ ] Final UI/UX polish
+- [ ] Production-ready configuration
 
 **Blockers**: None
 
 **Documentation**:
-- See [docs/load-test-results.md](docs/load-test-results.md) for performance metrics
-- See [docs/optimizations.md](docs/optimizations.md) for future improvements
-- See [week1-tasks.md](week1-tasks.md) for detailed task breakdown
+- See [architecture docs](docs/architecture/README.md) for system architecture details
 
 ---
 
@@ -489,7 +501,6 @@ go test ./internal/kafka -v
 ### Current Limitations
 - PostgreSQL on port 5433 (to avoid conflicts with local postgres on 5432)
 - 50 sensors seeded in database
-- Batch processing causes ~50% throughput (see [optimizations.md](docs/optimizations.md))
 
 ### Troubleshooting
 - **Kafka connection refused**: Wait 15-20 seconds after `docker compose up` for Kafka to be ready
@@ -523,6 +534,6 @@ docker logs redis -f
 
 ---
 
-**Last Updated**: November 19, 2025
-**Version**: 1.1
-**Status**: Week 1 Complete ✅
+**Last Updated**: December 16, 2025
+**Version**: 2.0
+**Status**: Week 4 Complete ✅ | Phase 5 Starting

@@ -22,10 +22,10 @@ type TestResult struct {
 }
 
 type PerformanceReport struct {
-	Results         []TestResult
-	TotalDuration   time.Duration
-	RequestsPerSec  float64
-	OverallSuccess  float64
+	Results        []TestResult
+	TotalDuration  time.Duration
+	RequestsPerSec float64
+	OverallSuccess float64
 }
 
 const (
@@ -46,7 +46,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("✅ API is healthy. Starting load tests...\n")
+	fmt.Println("✅ API is healthy. Starting load tests...")
 
 	// Define endpoints to test
 	endpoints := []string{
@@ -55,7 +55,6 @@ func main() {
 		"/api/v1/readings/latest",
 		"/api/v1/analytics/city-stats",
 		"/api/v1/analytics/top-polluted?limit=10",
-		"/api/v1/alerts?limit=20",
 		"/health",
 	}
 
@@ -163,10 +162,10 @@ func generateReport(results []TestResult, totalDuration time.Duration) Performan
 	reqPerSec := float64(totalRequests) / totalDuration.Seconds()
 
 	return PerformanceReport{
-		Results:         results,
-		TotalDuration:   totalDuration,
-		RequestsPerSec:  reqPerSec,
-		OverallSuccess:  successRate,
+		Results:        results,
+		TotalDuration:  totalDuration,
+		RequestsPerSec: reqPerSec,
+		OverallSuccess: successRate,
 	}
 }
 

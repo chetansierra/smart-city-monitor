@@ -41,10 +41,6 @@ The integration tests cover:
   - Top polluted areas
   - Hottest areas
   - Quietest areas
-- **Alerts Endpoints**
-  - List all alerts
-  - Filter by severity and active status
-  - Acknowledge alerts
 - **Error Handling**
   - Invalid pagination parameters
   - Invalid date formats
@@ -52,7 +48,7 @@ The integration tests cover:
   - CORS headers
   - Security headers
 
-Total: **17 test cases** covering all major API endpoints
+Total: **14 test cases** covering core API endpoints
 
 ## Performance Tests
 
@@ -83,8 +79,7 @@ go run tests/performance/load_test_main.go
 3. `GET /api/v1/readings/latest`
 4. `GET /api/v1/analytics/city-stats`
 5. `GET /api/v1/analytics/top-polluted?limit=10`
-6. `GET /api/v1/alerts?limit=20`
-7. `GET /health`
+6. `GET /health`
 
 ### Performance Metrics
 

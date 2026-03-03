@@ -547,3 +547,327 @@ func (h *AnalyticsHandler) GetQuietest(c *fiber.Ctx) error {
 		},
 	})
 }
+
+// HourlyAggregation represents hourly aggregated data for all sensors
+type HourlyAggregation struct {
+	Hour           time.Time          `json:"hour"`
+	SensorType     string             `json:"sensor_type"`
+	AvgValue       float64            `json:"avg_value"`
+	MinValue       float64            `json:"min_value"`
+	MaxValue       float64            `json:"max_value"`
+	Count          int                `json:"count"`
+	SensorReadings map[string]float64 `json:"sensor_readings"`
+}
+
+// GetHourlyAggregations handles GET /api/v1/analytics/hourly
+func (h *AnalyticsHandler) GetHourlyAggregations(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Parse time range
+	fromStr := c.Query("from", "")
+	toStr := c.Query("to", "")
+	sensorType := c.Query("sensor_type", "")
+
+	var from, to time.Time
+	var err error
+
+	if fromStr != "" {
+		from, err = time.Parse(time.RFC3339, fromStr)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+				Success: false,
+				Error: &APIError{
+					Code:    "INVALID_TIMESTAMP",
+					Message: "Invalid 'from' timestamp format",
+				},
+			})
+		}
+	}
+
+	if toStr != "" {
+		to, err = time.Parse(time.RFC3339, toStr)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+				Success: false,
+				Error: &APIError{
+					Code:    "INVALID_TIMESTAMP",
+					Message: "Invalid 'to' timestamp format",
+				},
+			})
+		}
+	}
+
+	// Default to last 24 hours
+	if fromStr == "" && toStr == "" {
+		to = time.Now()
+		from = to.Add(-24 * time.Hour)
+	} else if fromStr == "" {
+		from = to.Add(-24 * time.Hour)
+	} else if toStr == "" {
+		to = time.Now()
+	}
+
+	// Get all sensors or filtered by type
+	var sensors []models.Sensor
+	if sensorType != "" {
+		sensors, err = h.db.GetSensorsByType(ctx, models.SensorType(sensorType))
+	} else {
+		sensors, err = h.db.GetAllSensors(ctx)
+	}
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch sensors")
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "DATABASE_ERROR",
+				Message: "Failed to fetch sensors",
+			},
+		})
+	}
+
+	// Aggregate data by hour and sensor type
+	hourlyData := make(map[string]map[string]*HourlyAggregation) // hour -> sensor_type -> data
+
+	for _, sensor := range sensors {
+		readings, err := h.db.GetReadingsInTimeRange(ctx, sensor.ID, from, to)
+		if err != nil {
+			log.Error().Err(err).Str("sensor_id", sensor.ID.String()).Msg("Failed to fetch readings")
+			continue
+		}
+
+		for _, reading := range readings {
+			hourKey := reading.Timestamp.Truncate(time.Hour).Format(time.RFC3339)
+			typeKey := string(reading.SensorType)
+
+			if hourlyData[hourKey] == nil {
+				hourlyData[hourKey] = make(map[string]*HourlyAggregation)
+			}
+
+			if hourlyData[hourKey][typeKey] == nil {
+				hourlyData[hourKey][typeKey] = &HourlyAggregation{
+					Hour:           reading.Timestamp.Truncate(time.Hour),
+					SensorType:     typeKey,
+					MinValue:       reading.Value,
+					MaxValue:       reading.Value,
+					SensorReadings: make(map[string]float64),
+				}
+			}
+
+			agg := hourlyData[hourKey][typeKey]
+			agg.AvgValue += reading.Value
+			agg.Count++
+			agg.SensorReadings[sensor.ID.String()] = reading.Value
+
+			if reading.Value < agg.MinValue {
+				agg.MinValue = reading.Value
+			}
+			if reading.Value > agg.MaxValue {
+				agg.MaxValue = reading.Value
+			}
+		}
+	}
+
+	// Calculate averages and flatten result
+	result := make([]HourlyAggregation, 0)
+	for _, typeMap := range hourlyData {
+		for _, agg := range typeMap {
+			if agg.Count > 0 {
+				agg.AvgValue = agg.AvgValue / float64(agg.Count)
+			}
+			result = append(result, *agg)
+		}
+	}
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    result,
+		Meta: &Meta{
+			Total: len(result),
+		},
+	})
+}
+
+// ComparisonData represents data for time-series comparison
+type ComparisonData struct {
+	SensorID   string                 `json:"sensor_id"`
+	SensorName string                 `json:"sensor_name"`
+	SensorType string                 `json:"sensor_type"`
+	Periods    map[string]PeriodStats `json:"periods"`
+}
+
+// PeriodStats represents statistics for a time period
+type PeriodStats struct {
+	PeriodName string      `json:"period_name"`
+	AvgValue   float64     `json:"avg_value"`
+	MinValue   float64     `json:"min_value"`
+	MaxValue   float64     `json:"max_value"`
+	Count      int         `json:"count"`
+	Timestamps []time.Time `json:"timestamps"`
+	Values     []float64   `json:"values"`
+}
+
+// GetComparisonData handles GET /api/v1/analytics/compare
+func (h *AnalyticsHandler) GetComparisonData(c *fiber.Ctx) error {
+	_, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Parse sensor IDs
+	sensorIDs := c.Query("sensor_ids", "")
+	if sensorIDs == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "MISSING_SENSOR_IDS",
+				Message: "sensor_ids query parameter is required",
+			},
+		})
+	}
+
+	// Parse periods (e.g., "today,yesterday,last_week")
+	_ = c.Query("periods", "today,yesterday")
+
+	// TODO: Implement comparison logic
+	// This is a placeholder response for now
+	log.Debug().Str("sensor_ids", sensorIDs).Msg("Comparison data requested")
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    []ComparisonData{},
+		Meta: &Meta{
+			Total: 0,
+		},
+	})
+}
+
+// ZoneStats represents statistics for a geographic zone
+type ZoneStats struct {
+	ZoneName    string       `json:"zone_name"`
+	SensorType  string       `json:"sensor_type"`
+	AvgValue    float64      `json:"avg_value"`
+	MinValue    float64      `json:"min_value"`
+	MaxValue    float64      `json:"max_value"`
+	SensorCount int          `json:"sensor_count"`
+	TopSensors  []TopSensor  `json:"top_sensors"`
+	Coordinates []Coordinate `json:"coordinates"`
+}
+
+// Coordinate represents a lat/lng point
+type Coordinate struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Value     float64 `json:"value"`
+}
+
+// GetZoneAnalytics handles GET /api/v1/analytics/zones
+func (h *AnalyticsHandler) GetZoneAnalytics(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sensorType := c.Query("sensor_type", "pollution")
+
+	// Get all sensors of the specified type
+	sensors, err := h.db.GetSensorsByType(ctx, models.SensorType(sensorType))
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch sensors")
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "DATABASE_ERROR",
+				Message: "Failed to fetch sensors",
+			},
+		})
+	}
+
+	// Define zones (hardcoded for now - could be moved to database)
+	zones := map[string]struct {
+		MinLat float64
+		MaxLat float64
+		MinLng float64
+		MaxLng float64
+	}{
+		"downtown": {MinLat: 40.710, MaxLat: 40.725, MinLng: -74.015, MaxLng: -74.000},
+		"midtown":  {MinLat: 40.740, MaxLat: 40.765, MinLng: -73.995, MaxLng: -73.975},
+		"uptown":   {MinLat: 40.770, MaxLat: 40.795, MinLng: -73.985, MaxLng: -73.960},
+	}
+
+	zoneStats := make(map[string]*ZoneStats)
+
+	for zoneName, bounds := range zones {
+		zoneStats[zoneName] = &ZoneStats{
+			ZoneName:    zoneName,
+			SensorType:  sensorType,
+			TopSensors:  []TopSensor{},
+			Coordinates: []Coordinate{},
+		}
+
+		var totalValue float64
+		var count int
+		minVal := 999999.0
+		maxVal := -999999.0
+
+		for _, sensor := range sensors {
+			// Check if sensor is in zone
+			if sensor.Latitude >= bounds.MinLat && sensor.Latitude <= bounds.MaxLat &&
+				sensor.Longitude >= bounds.MinLng && sensor.Longitude <= bounds.MaxLng {
+
+				// Get latest value
+				key := fmt.Sprintf("sensor:latest:%s", sensor.ID.String())
+				data, err := h.redisClient.HGetAll(ctx, key).Result()
+				if err != nil || len(data) == 0 {
+					continue
+				}
+
+				var value float64
+				if v, ok := data["value"]; ok {
+					fmt.Sscanf(v, "%f", &value)
+				}
+
+				totalValue += value
+				count++
+
+				if value < minVal {
+					minVal = value
+				}
+				if value > maxVal {
+					maxVal = value
+				}
+
+				zoneStats[zoneName].Coordinates = append(zoneStats[zoneName].Coordinates, Coordinate{
+					Latitude:  sensor.Latitude,
+					Longitude: sensor.Longitude,
+					Value:     value,
+				})
+
+				zoneStats[zoneName].TopSensors = append(zoneStats[zoneName].TopSensors, TopSensor{
+					SensorID:   sensor.ID.String(),
+					SensorName: sensor.Name,
+					SensorType: string(sensor.Type),
+					AvgValue:   value,
+				})
+			}
+		}
+
+		if count > 0 {
+			zoneStats[zoneName].AvgValue = totalValue / float64(count)
+			zoneStats[zoneName].MinValue = minVal
+			zoneStats[zoneName].MaxValue = maxVal
+			zoneStats[zoneName].SensorCount = count
+		}
+	}
+
+	// Convert map to slice
+	result := make([]ZoneStats, 0, len(zoneStats))
+	for _, stats := range zoneStats {
+		result = append(result, *stats)
+	}
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    result,
+		Meta: &Meta{
+			Total: len(result),
+		},
+	})
+}

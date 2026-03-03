@@ -26,6 +26,9 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load config")
 	}
+	if err := cfg.Validate("data-ingestion"); err != nil {
+		log.Fatal().Err(err).Msg("Invalid configuration")
+	}
 
 	// Setup logger
 	logger.Setup(logger.Config{
@@ -151,20 +154,37 @@ func (s *IngestionService) handleMessage(messageBytes []byte) error {
 		return nil
 	}
 
-	timestamp, err := time.Parse(time.RFC3339, kafkaMsg.Timestamp)
+	// Try parsing with nanoseconds first, fallback to RFC3339 for backward compatibility
+	timestamp, err := time.Parse(time.RFC3339Nano, kafkaMsg.Timestamp)
 	if err != nil {
-		log.Warn().Err(err).Str("timestamp", kafkaMsg.Timestamp).Msg("Invalid timestamp")
-		return nil
+		timestamp, err = time.Parse(time.RFC3339, kafkaMsg.Timestamp)
+		if err != nil {
+			log.Warn().Err(err).Str("timestamp", kafkaMsg.Timestamp).Msg("Invalid timestamp")
+			return nil
+		}
+	}
+
+	var sessionID *uuid.UUID
+	if kafkaMsg.SessionID != "" {
+		id, err := uuid.Parse(kafkaMsg.SessionID)
+		if err == nil {
+			sessionID = &id
+		}
 	}
 
 	reading := models.SensorReading{
 		SensorID:   sensorID,
+		SessionID:  sessionID,
 		SensorType: models.SensorType(kafkaMsg.SensorType),
 		Value:      kafkaMsg.Value,
 		Unit:       kafkaMsg.Unit,
-		Latitude:   kafkaMsg.Location.Latitude,
-		Longitude:  kafkaMsg.Location.Longitude,
-		Timestamp:  timestamp,
+		Location: models.Location{
+			Latitude:  kafkaMsg.Location.Latitude,
+			Longitude: kafkaMsg.Location.Longitude,
+		},
+		Latitude:  kafkaMsg.Location.Latitude,
+		Longitude: kafkaMsg.Location.Longitude,
+		Timestamp: timestamp,
 	}
 
 	// Add to batch
@@ -192,7 +212,7 @@ func (s *IngestionService) handleMessage(messageBytes []byte) error {
 		}
 	}
 
-	// Publish update for WebSocket subscribers
+	// Publish update for SSE subscribers
 	if err := s.redis.PublishSensorUpdate(ctx, &reading); err != nil {
 		log.Error().Err(err).Str("sensor_id", sensorID.String()).Msg("Failed to publish sensor update")
 	}

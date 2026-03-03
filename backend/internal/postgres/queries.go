@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chetansierra/smart-city-monitor/internal/models"
@@ -12,7 +13,7 @@ import (
 // GetAllSensors retrieves all sensors from the database
 func (db *DB) GetAllSensors(ctx context.Context) ([]models.Sensor, error) {
 	query := `
-		SELECT id, name, type, latitude, longitude, status, config, created_at, updated_at
+		SELECT id, session_id, name, type, latitude, longitude, status, config, created_at, updated_at
 		FROM sensors
 		ORDER BY name
 	`
@@ -27,7 +28,7 @@ func (db *DB) GetAllSensors(ctx context.Context) ([]models.Sensor, error) {
 	for rows.Next() {
 		var s models.Sensor
 		err := rows.Scan(
-			&s.ID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
+			&s.ID, &s.SessionID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
 			&s.Status, &s.Config, &s.CreatedAt, &s.UpdatedAt,
 		)
 		if err != nil {
@@ -49,14 +50,14 @@ func (db *DB) GetAllSensors(ctx context.Context) ([]models.Sensor, error) {
 // GetSensorByID retrieves a single sensor by ID
 func (db *DB) GetSensorByID(ctx context.Context, id uuid.UUID) (*models.Sensor, error) {
 	query := `
-		SELECT id, name, type, latitude, longitude, status, config, created_at, updated_at
+		SELECT id, session_id, name, type, latitude, longitude, status, config, created_at, updated_at
 		FROM sensors
 		WHERE id = $1
 	`
 
 	var s models.Sensor
 	err := db.QueryRowContext(ctx, query, id).Scan(
-		&s.ID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
+		&s.ID, &s.SessionID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
 		&s.Status, &s.Config, &s.CreatedAt, &s.UpdatedAt,
 	)
 	if err != nil {
@@ -74,7 +75,7 @@ func (db *DB) GetSensorByID(ctx context.Context, id uuid.UUID) (*models.Sensor, 
 // GetSensorsByType retrieves sensors by type
 func (db *DB) GetSensorsByType(ctx context.Context, sensorType models.SensorType) ([]models.Sensor, error) {
 	query := `
-		SELECT id, name, type, latitude, longitude, status, config, created_at, updated_at
+		SELECT id, session_id, name, type, latitude, longitude, status, config, created_at, updated_at
 		FROM sensors
 		WHERE type = $1
 		ORDER BY name
@@ -90,7 +91,7 @@ func (db *DB) GetSensorsByType(ctx context.Context, sensorType models.SensorType
 	for rows.Next() {
 		var s models.Sensor
 		err := rows.Scan(
-			&s.ID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
+			&s.ID, &s.SessionID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
 			&s.Status, &s.Config, &s.CreatedAt, &s.UpdatedAt,
 		)
 		if err != nil {
@@ -108,16 +109,75 @@ func (db *DB) GetSensorsByType(ctx context.Context, sensorType models.SensorType
 	return sensors, rows.Err()
 }
 
+// CountSensorsBySession returns how many sensors belong to a session.
+func (db *DB) CountSensorsBySession(ctx context.Context, sessionID uuid.UUID) (int, error) {
+	query := `SELECT COUNT(*) FROM sensors WHERE session_id = $1`
+	var count int
+	if err := db.QueryRowContext(ctx, query, sessionID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count sensors for session: %w", err)
+	}
+	return count, nil
+}
+
+// UpdateSensorsStatus updates status for the provided sensor IDs.
+func (db *DB) UpdateSensorsStatus(ctx context.Context, sensorIDs []uuid.UUID, status models.SensorStatus) error {
+	if len(sensorIDs) == 0 {
+		return nil
+	}
+
+	args := make([]interface{}, 0, len(sensorIDs)+1)
+	args = append(args, status)
+
+	placeholders := make([]string, 0, len(sensorIDs))
+	for i, id := range sensorIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE sensors
+		SET status = $1, updated_at = NOW()
+		WHERE id IN (%s)
+	`, strings.Join(placeholders, ", "))
+
+	_, err := db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update sensor statuses: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteSensorByIDAndSession deletes a sensor owned by the given session.
+func (db *DB) DeleteSensorByIDAndSession(ctx context.Context, id uuid.UUID, sessionID uuid.UUID) (bool, error) {
+	query := `
+		DELETE FROM sensors
+		WHERE id = $1 AND session_id = $2
+	`
+
+	result, err := db.ExecContext(ctx, query, id, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("failed to delete sensor: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect delete result: %w", err)
+	}
+
+	return rowsAffected > 0, nil
+}
+
 // InsertSensorReading inserts a new sensor reading
 func (db *DB) InsertSensorReading(ctx context.Context, reading *models.SensorReading) error {
 	query := `
-		INSERT INTO sensor_readings (sensor_id, sensor_type, value, unit, latitude, longitude, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO sensor_readings (sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
 	_, err := db.ExecContext(
 		ctx, query,
-		reading.SensorID, reading.SensorType, reading.Value, reading.Unit,
+		reading.SensorID, reading.SessionID, reading.SensorType, reading.Value, reading.Unit,
 		reading.Latitude, reading.Longitude, reading.Timestamp,
 	)
 	if err != nil {
@@ -140,8 +200,8 @@ func (db *DB) InsertSensorReadingsBatch(ctx context.Context, readings []models.S
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO sensor_readings (sensor_id, sensor_type, value, unit, latitude, longitude, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO sensor_readings (sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
@@ -151,7 +211,7 @@ func (db *DB) InsertSensorReadingsBatch(ctx context.Context, readings []models.S
 	for _, reading := range readings {
 		_, err := stmt.ExecContext(
 			ctx,
-			reading.SensorID, reading.SensorType, reading.Value, reading.Unit,
+			reading.SensorID, reading.SessionID, reading.SensorType, reading.Value, reading.Unit,
 			reading.Latitude, reading.Longitude, reading.Timestamp,
 		)
 		if err != nil {
@@ -169,7 +229,7 @@ func (db *DB) InsertSensorReadingsBatch(ctx context.Context, readings []models.S
 // GetRecentReadings retrieves recent readings for a sensor
 func (db *DB) GetRecentReadings(ctx context.Context, sensorID uuid.UUID, limit int) ([]models.SensorReading, error) {
 	query := `
-		SELECT id, sensor_id, sensor_type, value, unit, latitude, longitude, timestamp
+		SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
 		FROM sensor_readings
 		WHERE sensor_id = $1
 		ORDER BY timestamp DESC
@@ -186,7 +246,7 @@ func (db *DB) GetRecentReadings(ctx context.Context, sensorID uuid.UUID, limit i
 	for rows.Next() {
 		var r models.SensorReading
 		err := rows.Scan(
-			&r.ID, &r.SensorID, &r.SensorType, &r.Value, &r.Unit,
+			&r.ID, &r.SensorID, &r.SessionID, &r.SensorType, &r.Value, &r.Unit,
 			&r.Latitude, &r.Longitude, &r.Timestamp,
 		)
 		if err != nil {
@@ -207,7 +267,7 @@ func (db *DB) GetRecentReadings(ctx context.Context, sensorID uuid.UUID, limit i
 // GetReadingsInTimeRange retrieves readings within a time range
 func (db *DB) GetReadingsInTimeRange(ctx context.Context, sensorID uuid.UUID, from, to time.Time) ([]models.SensorReading, error) {
 	query := `
-		SELECT id, sensor_id, sensor_type, value, unit, latitude, longitude, timestamp
+		SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
 		FROM sensor_readings
 		WHERE sensor_id = $1 AND timestamp >= $2 AND timestamp <= $3
 		ORDER BY timestamp DESC
@@ -223,7 +283,7 @@ func (db *DB) GetReadingsInTimeRange(ctx context.Context, sensorID uuid.UUID, fr
 	for rows.Next() {
 		var r models.SensorReading
 		err := rows.Scan(
-			&r.ID, &r.SensorID, &r.SensorType, &r.Value, &r.Unit,
+			&r.ID, &r.SensorID, &r.SessionID, &r.SensorType, &r.Value, &r.Unit,
 			&r.Latitude, &r.Longitude, &r.Timestamp,
 		)
 		if err != nil {
@@ -241,54 +301,33 @@ func (db *DB) GetReadingsInTimeRange(ctx context.Context, sensorID uuid.UUID, fr
 	return readings, rows.Err()
 }
 
-// InsertAlert inserts a new alert
-func (db *DB) InsertAlert(ctx context.Context, alert *models.Alert) error {
+// InsertSensor inserts a new sensor into the database
+func (db *DB) InsertSensor(ctx context.Context, s *models.Sensor) error {
 	query := `
-		INSERT INTO alerts (sensor_id, alert_type, severity, message, value, threshold, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id
+		INSERT INTO sensors (id, session_id, name, type, latitude, longitude, status, config, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`
 
-	err := db.QueryRowContext(
-		ctx, query,
-		alert.SensorID, alert.AlertType, alert.Severity, alert.Message,
-		alert.Value, alert.Threshold, alert.Timestamp,
-	).Scan(&alert.ID)
+	now := time.Now()
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = now
+	}
+	if s.UpdatedAt.IsZero() {
+		s.UpdatedAt = now
+	}
+	if s.Config == "" {
+		// sensors.config is JSONB; keep inserts valid even when config is omitted.
+		s.Config = "{}"
+	}
 
+	_, err := db.ExecContext(
+		ctx, query,
+		s.ID, s.SessionID, s.Name, s.Type, s.Latitude, s.Longitude,
+		s.Status, s.Config, s.CreatedAt, s.UpdatedAt,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to insert alert: %w", err)
+		return fmt.Errorf("failed to insert sensor: %w", err)
 	}
 
 	return nil
-}
-
-// GetUnacknowledgedAlerts retrieves all unacknowledged alerts
-func (db *DB) GetUnacknowledgedAlerts(ctx context.Context) ([]models.Alert, error) {
-	query := `
-		SELECT id, sensor_id, alert_type, severity, message, value, threshold, timestamp, acknowledged
-		FROM alerts
-		WHERE acknowledged = FALSE
-		ORDER BY timestamp DESC
-	`
-
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query unacknowledged alerts: %w", err)
-	}
-	defer rows.Close()
-
-	var alerts []models.Alert
-	for rows.Next() {
-		var a models.Alert
-		err := rows.Scan(
-			&a.ID, &a.SensorID, &a.AlertType, &a.Severity, &a.Message,
-			&a.Value, &a.Threshold, &a.Timestamp, &a.Acknowledged,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan alert: %w", err)
-		}
-		alerts = append(alerts, a)
-	}
-
-	return alerts, rows.Err()
 }

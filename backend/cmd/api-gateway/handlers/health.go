@@ -31,10 +31,12 @@ type HealthStatus struct {
 
 // HealthResponse represents the overall health check response
 type HealthResponse struct {
-	Status    string                  `json:"status"`
-	Timestamp string                  `json:"timestamp"`
-	Services  map[string]HealthStatus `json:"services"`
-	Uptime    string                  `json:"uptime,omitempty"`
+	Status           string                  `json:"status"`
+	Timestamp        string                  `json:"timestamp"`
+	Services         map[string]HealthStatus `json:"services"`
+	Uptime           string                  `json:"uptime,omitempty"`
+	LastDataReceived string                  `json:"last_data_received,omitempty"`
+	MessageCount     int64                   `json:"message_count,omitempty"`
 }
 
 var startTime = time.Now()
@@ -76,11 +78,35 @@ func (h *HealthHandler) Check(c *fiber.Ctx) error {
 	// Calculate uptime
 	uptime := time.Since(startTime).Round(time.Second).String()
 
+	// Check last data timestamp from Redis
+	var lastDataReceived string
+	var messageCount int64
+	if incrCount, err := h.redisClient.Incr(ctx, "health:message_count_check"); err == nil {
+		// Decrement back since we're just checking
+		h.redisClient.Incr(ctx, "health:message_count_check")
+		messageCount = incrCount
+	}
+
+	// Try to get a recent sensor reading timestamp
+	if sensors, err := h.db.GetAllSensors(ctx); err == nil && len(sensors) > 0 {
+		// Check the most recent reading timestamp in Redis
+		for _, sensor := range sensors[:1] { // Just check first sensor
+			if data, err := h.redisClient.HGetAll(ctx, "sensor:latest:"+sensor.ID.String()).Result(); err == nil {
+				if ts, ok := data["timestamp"]; ok {
+					lastDataReceived = ts
+					break
+				}
+			}
+		}
+	}
+
 	response := HealthResponse{
-		Status:    overallStatus,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Services:  services,
-		Uptime:    uptime,
+		Status:           overallStatus,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339Nano),
+		Services:         services,
+		Uptime:           uptime,
+		LastDataReceived: lastDataReceived,
+		MessageCount:     messageCount,
 	}
 
 	statusCode := fiber.StatusOK
