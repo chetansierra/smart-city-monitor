@@ -1,13 +1,17 @@
 package middleware
 
 import (
+	"os"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-// SecurityHeaders adds security-related HTTP headers
+// SecurityHeaders adds security-related HTTP headers.
+// Pass isProduction=true when ENVIRONMENT=production to enable HSTS.
 func SecurityHeaders() fiber.Handler {
+	isProduction := os.Getenv("ENVIRONMENT") == "production"
+
 	return func(c *fiber.Ctx) error {
 		// Prevent MIME type sniffing
 		c.Set("X-Content-Type-Options", "nosniff")
@@ -22,23 +26,24 @@ func SecurityHeaders() fiber.Handler {
 		c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
 		// Content Security Policy (CSP)
-		// Strict policy - adjust based on your needs
+		// connect-src allows https:/wss: so the Vercel frontend can reach this backend
 		csp := strings.Join([]string{
 			"default-src 'self'",
 			"script-src 'self'",
 			"style-src 'self' 'unsafe-inline'",
 			"img-src 'self' data: https:",
 			"font-src 'self'",
-			"connect-src 'self' http://localhost:* ws://localhost:*",
+			"connect-src 'self' http://localhost:* ws://localhost:* https: wss:",
 			"frame-ancestors 'none'",
 			"base-uri 'self'",
 			"form-action 'self'",
 		}, "; ")
 		c.Set("Content-Security-Policy", csp)
 
-		// HSTS - Force HTTPS (only enable in production with HTTPS)
-		// Uncomment when deployed with HTTPS
-		// c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+		// HSTS — only set when running behind HTTPS in production
+		if isProduction {
+			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 
 		// Permissions Policy (formerly Feature Policy)
 		c.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
@@ -74,27 +79,6 @@ func ValidateContentType() fiber.Handler {
 					"error": fiber.Map{
 						"code":    "UNSUPPORTED_MEDIA_TYPE",
 						"message": "Only application/json is supported",
-					},
-				})
-			}
-		}
-
-		return c.Next()
-	}
-}
-
-// RequestSizeLimit limits the size of incoming requests to prevent DoS
-func RequestSizeLimit(maxBytes int) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Check Content-Length header
-		if c.Get("Content-Length") != "" {
-			contentLength := len(c.Body())
-			if contentLength > maxBytes {
-				return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{
-					"success": false,
-					"error": fiber.Map{
-						"code":    "REQUEST_TOO_LARGE",
-						"message": "Request body exceeds maximum allowed size",
 					},
 				})
 			}
@@ -192,48 +176,3 @@ func containsXSS(input string) bool {
 	return false
 }
 
-// TrustedProxies configures trusted proxy headers
-func TrustedProxies(trustedProxies []string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// In production, validate that requests come from trusted proxies
-		// For now, this is a placeholder that can be enhanced
-
-		// Example: Validate X-Forwarded-For header
-		forwardedFor := c.Get("X-Forwarded-For")
-		if forwardedFor != "" {
-			// In production, validate that the proxy is trusted
-			// and properly sanitize the forwarded IP
-		}
-
-		return c.Next()
-	}
-}
-
-// APIKeyAuth validates API key authentication (for future use)
-func APIKeyAuth(validKeys map[string]bool) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		apiKey := c.Get("X-API-Key")
-
-		if apiKey == "" {
-			// For now, allow requests without API key
-			// In production, you might want to require it
-			return c.Next()
-		}
-
-		// Validate API key
-		if !validKeys[apiKey] {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"success": false,
-				"error": fiber.Map{
-					"code":    "INVALID_API_KEY",
-					"message": "Invalid or missing API key",
-				},
-			})
-		}
-
-		// Store API key in context for later use
-		c.Locals("api_key", apiKey)
-
-		return c.Next()
-	}
-}

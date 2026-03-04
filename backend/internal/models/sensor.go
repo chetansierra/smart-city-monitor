@@ -17,13 +17,13 @@ const (
 	SensorTypeNoise       SensorType = "noise"
 )
 
-// SensorStatus represents the operational status of a sensor
+// SensorStatus represents the operational status of a sensor.
+// Migration 009 enforces that only "active" sensors exist in the database;
+// deactivation is done by deleting the row, not changing status.
 type SensorStatus string
 
 const (
-	SensorStatusActive   SensorStatus = "active"
-	SensorStatusInactive SensorStatus = "inactive"
-	SensorStatusError    SensorStatus = "error"
+	SensorStatusActive SensorStatus = "active"
 )
 
 // Location represents geographic coordinates

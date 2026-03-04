@@ -608,21 +608,15 @@ func (h *AnalyticsHandler) GetHourlyAggregations(c *fiber.Ctx) error {
 		to = time.Now()
 	}
 
-	// Get all sensors or filtered by type
-	var sensors []models.Sensor
-	if sensorType != "" {
-		sensors, err = h.db.GetSensorsByType(ctx, models.SensorType(sensorType))
-	} else {
-		sensors, err = h.db.GetAllSensors(ctx)
-	}
-
+	// Fetch all readings in a single bulk query
+	readings, err := h.db.GetReadingsInTimeRangeForAllSensors(ctx, from, to, sensorType)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to fetch sensors")
+		log.Error().Err(err).Msg("Failed to fetch readings")
 		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
 			Success: false,
 			Error: &APIError{
 				Code:    "DATABASE_ERROR",
-				Message: "Failed to fetch sensors",
+				Message: "Failed to fetch readings",
 			},
 		})
 	}
@@ -630,42 +624,34 @@ func (h *AnalyticsHandler) GetHourlyAggregations(c *fiber.Ctx) error {
 	// Aggregate data by hour and sensor type
 	hourlyData := make(map[string]map[string]*HourlyAggregation) // hour -> sensor_type -> data
 
-	for _, sensor := range sensors {
-		readings, err := h.db.GetReadingsInTimeRange(ctx, sensor.ID, from, to)
-		if err != nil {
-			log.Error().Err(err).Str("sensor_id", sensor.ID.String()).Msg("Failed to fetch readings")
-			continue
+	for _, reading := range readings {
+		hourKey := reading.Timestamp.Truncate(time.Hour).Format(time.RFC3339)
+		typeKey := string(reading.SensorType)
+
+		if hourlyData[hourKey] == nil {
+			hourlyData[hourKey] = make(map[string]*HourlyAggregation)
 		}
 
-		for _, reading := range readings {
-			hourKey := reading.Timestamp.Truncate(time.Hour).Format(time.RFC3339)
-			typeKey := string(reading.SensorType)
-
-			if hourlyData[hourKey] == nil {
-				hourlyData[hourKey] = make(map[string]*HourlyAggregation)
+		if hourlyData[hourKey][typeKey] == nil {
+			hourlyData[hourKey][typeKey] = &HourlyAggregation{
+				Hour:           reading.Timestamp.Truncate(time.Hour),
+				SensorType:     typeKey,
+				MinValue:       reading.Value,
+				MaxValue:       reading.Value,
+				SensorReadings: make(map[string]float64),
 			}
+		}
 
-			if hourlyData[hourKey][typeKey] == nil {
-				hourlyData[hourKey][typeKey] = &HourlyAggregation{
-					Hour:           reading.Timestamp.Truncate(time.Hour),
-					SensorType:     typeKey,
-					MinValue:       reading.Value,
-					MaxValue:       reading.Value,
-					SensorReadings: make(map[string]float64),
-				}
-			}
+		agg := hourlyData[hourKey][typeKey]
+		agg.AvgValue += reading.Value
+		agg.Count++
+		agg.SensorReadings[reading.SensorID.String()] = reading.Value
 
-			agg := hourlyData[hourKey][typeKey]
-			agg.AvgValue += reading.Value
-			agg.Count++
-			agg.SensorReadings[sensor.ID.String()] = reading.Value
-
-			if reading.Value < agg.MinValue {
-				agg.MinValue = reading.Value
-			}
-			if reading.Value > agg.MaxValue {
-				agg.MaxValue = reading.Value
-			}
+		if reading.Value < agg.MinValue {
+			agg.MinValue = reading.Value
+		}
+		if reading.Value > agg.MaxValue {
+			agg.MaxValue = reading.Value
 		}
 	}
 

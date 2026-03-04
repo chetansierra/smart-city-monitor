@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/IBM/sarama"
 	"github.com/chetansierra/smart-city-monitor/internal/models"
 	"github.com/chetansierra/smart-city-monitor/internal/postgres"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
@@ -19,17 +18,15 @@ import (
 
 // AdminHandler handles admin control endpoints
 type AdminHandler struct {
-	db            *postgres.DB
-	redisClient   *redis.Client
-	kafkaProducer sarama.SyncProducer
+	db          *postgres.DB
+	redisClient *redis.Client
 }
 
 // NewAdminHandler creates a new admin handler
-func NewAdminHandler(db *postgres.DB, redisClient *redis.Client, kafkaProducer sarama.SyncProducer) *AdminHandler {
+func NewAdminHandler(db *postgres.DB, redisClient *redis.Client) *AdminHandler {
 	return &AdminHandler{
-		db:            db,
-		redisClient:   redisClient,
-		kafkaProducer: kafkaProducer,
+		db:          db,
+		redisClient: redisClient,
 	}
 }
 
@@ -73,8 +70,7 @@ func (h *AdminHandler) ControlSensors(c *fiber.Ctx) error {
 		})
 	}
 
-	sessionID, err := getSessionID(c)
-	if err != nil {
+	if _, err := getSessionID(c); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
 			Success: false,
 			Error: &APIError{
@@ -104,47 +100,23 @@ func (h *AdminHandler) ControlSensors(c *fiber.Ctx) error {
 		})
 	}
 
-	// Send control commands to Kafka
+	// Parse and validate sensor IDs
 	successfulIDs := make([]uuid.UUID, 0, len(req.SensorIDs))
 	for _, sensorID := range req.SensorIDs {
-		command := map[string]interface{}{
-			"sensor_id":  sensorID,
-			"session_id": sessionID,
-			"action":     req.Action,
-			"timestamp":  time.Now().Unix(),
-		}
-
-		commandBytes, err := json.Marshal(command)
-		if err != nil {
-			log.Error().Err(err).Str("sensor_id", sensorID).Msg("Failed to marshal command")
-			continue
-		}
-
-		message := &sarama.ProducerMessage{
-			Topic: "sensor-control",
-			Key:   sarama.StringEncoder(sensorID),
-			Value: sarama.ByteEncoder(commandBytes),
-		}
-
-		if _, _, err := h.kafkaProducer.SendMessage(message); err != nil {
-			log.Error().Err(err).Str("sensor_id", sensorID).Msg("Failed to send control message")
-			continue
-		}
-
 		parsedID, err := uuid.Parse(sensorID)
 		if err != nil {
-			log.Warn().Str("sensor_id", sensorID).Msg("Skipping status update for invalid sensor ID")
+			log.Warn().Str("sensor_id", sensorID).Msg("Skipping invalid sensor ID")
 			continue
 		}
 		successfulIDs = append(successfulIDs, parsedID)
 	}
 
 	if len(successfulIDs) == 0 {
-		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
 			Success: false,
 			Error: &APIError{
-				Code:    "KAFKA_ERROR",
-				Message: "Failed to send control command to sensors",
+				Code:    "INVALID_SENSOR_IDS",
+				Message: "No valid sensor IDs provided",
 			},
 		})
 	}
@@ -180,8 +152,7 @@ func (h *AdminHandler) StartAllSensors(c *fiber.Ctx) error {
 	defer cancel()
 
 	// Get all sensors
-	sessionID, err := getSessionID(c)
-	if err != nil {
+	if _, err := getSessionID(c); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
 			Success: false,
 			Error: &APIError{
@@ -203,29 +174,9 @@ func (h *AdminHandler) StartAllSensors(c *fiber.Ctx) error {
 		})
 	}
 
-	// Send start command to all sensors
-	successCount := 0
+	// Update all sensor statuses
 	successfulIDs := make([]uuid.UUID, 0, len(sensors))
 	for _, sensor := range sensors {
-		command := map[string]interface{}{
-			"sensor_id":  sensor.ID.String(),
-			"session_id": sessionID,
-			"action":     "start",
-			"timestamp":  time.Now().Unix(),
-		}
-
-		commandBytes, _ := json.Marshal(command)
-		message := &sarama.ProducerMessage{
-			Topic: "sensor-control",
-			Key:   sarama.StringEncoder(sensor.ID.String()),
-			Value: sarama.ByteEncoder(commandBytes),
-		}
-
-		if _, _, err := h.kafkaProducer.SendMessage(message); err != nil {
-			log.Error().Err(err).Str("sensor_id", sensor.ID.String()).Msg("Failed to send start command")
-			continue
-		}
-		successCount++
 		successfulIDs = append(successfulIDs, sensor.ID)
 	}
 
@@ -235,13 +186,13 @@ func (h *AdminHandler) StartAllSensors(c *fiber.Ctx) error {
 		}
 	}
 
-	log.Info().Int("sensor_count", successCount).Msg("Start-all command sent")
+	log.Info().Int("sensor_count", len(successfulIDs)).Msg("Start-all command sent")
 
 	return c.JSON(APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"message":       "All sensors started",
-			"sensors_count": successCount,
+			"sensors_count": len(successfulIDs),
 		},
 	})
 }
@@ -285,37 +236,10 @@ func (h *AdminHandler) SetSimulationRate(c *fiber.Ctx) error {
 		req.BatchSize = 10 // Default
 	}
 
-	// Send rate control command to Kafka
+	// Store current rate in Redis for status queries
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	command := map[string]interface{}{
-		"type":                "rate_control",
-		"readings_per_second": req.ReadingsPerSecond,
-		"burst_mode":          req.BurstMode,
-		"batch_size":          req.BatchSize,
-		"timestamp":           time.Now().Unix(),
-	}
-
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "sensor-control",
-		Key:   sarama.StringEncoder("rate_control"),
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-
-	if _, _, err := h.kafkaProducer.SendMessage(message); err != nil {
-		log.Error().Err(err).Msg("Failed to send rate control message")
-		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
-			Success: false,
-			Error: &APIError{
-				Code:    "KAFKA_ERROR",
-				Message: "Failed to update simulation rate",
-			},
-		})
-	}
-
-	// Store current rate in Redis for status queries
 	rateKey := "simulation:rate"
 	rateData := map[string]interface{}{
 		"readings_per_second": req.ReadingsPerSecond,
@@ -393,30 +317,6 @@ func (h *AdminHandler) ClearRedisCache(c *fiber.Ctx) error {
 func (h *AdminHandler) ResetSimulation(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	// Send reset command to Kafka
-	command := map[string]interface{}{
-		"type":      "reset",
-		"timestamp": time.Now().Unix(),
-	}
-
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "sensor-control",
-		Key:   sarama.StringEncoder("reset"),
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-
-	if _, _, err := h.kafkaProducer.SendMessage(message); err != nil {
-		log.Error().Err(err).Msg("Failed to send reset message")
-		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
-			Success: false,
-			Error: &APIError{
-				Code:    "KAFKA_ERROR",
-				Message: "Failed to send reset command",
-			},
-		})
-	}
 
 	// Clear Redis cache
 	pattern := "sensor:latest:*"
@@ -577,26 +477,6 @@ func (h *AdminHandler) ActivateScenario(c *fiber.Ctx) error {
 		})
 	}
 
-	// Send scenario activation command to Kafka
-	command := map[string]interface{}{
-		"type":      "scenario_activate",
-		"scenario":  req.ScenarioType,
-		"duration":  selectedScenario.Duration.Minutes(),
-		"timestamp": time.Now().Unix(),
-	}
-
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "scenario-control",
-		Key:   sarama.StringEncoder(req.ScenarioType),
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-
-	_, _, err = h.kafkaProducer.SendMessage(message)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to send scenario command to Kafka")
-	}
-
 	log.Info().
 		Str("scenario", req.ScenarioType).
 		Float64("duration_minutes", selectedScenario.Duration.Minutes()).
@@ -747,21 +627,6 @@ func (h *AdminHandler) SetSensorThreshold(c *fiber.Ctx) error {
 	updatedJSON, _ := config.ToJSON()
 	h.redisClient.Set(ctx, "simulation:config", updatedJSON, 0)
 
-	// Send update to Kafka
-	command := map[string]interface{}{
-		"type":      "threshold_update",
-		"sensor_id": req.SensorID,
-		"threshold": threshold,
-		"timestamp": time.Now().Unix(),
-	}
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "simulation-control",
-		Key:   sarama.StringEncoder(req.SensorID),
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-	h.kafkaProducer.SendMessage(message)
-
 	return c.JSON(APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
@@ -822,21 +687,6 @@ func (h *AdminHandler) SetSensorBehavior(c *fiber.Ctx) error {
 	updatedJSON, _ := config.ToJSON()
 	h.redisClient.Set(ctx, "simulation:config", updatedJSON, 0)
 
-	// Send update to Kafka
-	command := map[string]interface{}{
-		"type":      "behavior_update",
-		"sensor_id": req.SensorID,
-		"behavior":  behavior,
-		"timestamp": time.Now().Unix(),
-	}
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "simulation-control",
-		Key:   sarama.StringEncoder(req.SensorID),
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-	h.kafkaProducer.SendMessage(message)
-
 	return c.JSON(APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
@@ -895,19 +745,6 @@ func (h *AdminHandler) SetTimeCompression(c *fiber.Ctx) error {
 	updatedJSON, _ := config.ToJSON()
 	h.redisClient.Set(ctx, "simulation:config", updatedJSON, 0)
 
-	// Send update to Kafka
-	command := map[string]interface{}{
-		"type":       "time_compression",
-		"multiplier": req.Multiplier,
-		"timestamp":  time.Now().Unix(),
-	}
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "simulation-control",
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-	h.kafkaProducer.SendMessage(message)
-
 	return c.JSON(APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
@@ -950,19 +787,6 @@ func (h *AdminHandler) SetChaosMode(c *fiber.Ctx) error {
 	updatedJSON, _ := config.ToJSON()
 	h.redisClient.Set(ctx, "simulation:config", updatedJSON, 0)
 
-	// Send update to Kafka
-	command := map[string]interface{}{
-		"type":         "chaos_mode",
-		"chaos_config": chaosConfig,
-		"timestamp":    time.Now().Unix(),
-	}
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "simulation-control",
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-	h.kafkaProducer.SendMessage(message)
-
 	status := "disabled"
 	if chaosConfig.Enabled {
 		status = "enabled"
@@ -986,18 +810,6 @@ func (h *AdminHandler) ResetSimulationConfig(c *fiber.Ctx) error {
 	ctx := context.Background()
 	configJSON, _ := config.ToJSON()
 	h.redisClient.Set(ctx, "simulation:config", configJSON, 0)
-
-	// Send reset command to Kafka
-	command := map[string]interface{}{
-		"type":      "config_reset",
-		"timestamp": time.Now().Unix(),
-	}
-	commandBytes, _ := json.Marshal(command)
-	message := &sarama.ProducerMessage{
-		Topic: "simulation-control",
-		Value: sarama.ByteEncoder(commandBytes),
-	}
-	h.kafkaProducer.SendMessage(message)
 
 	return c.JSON(APIResponse{
 		Success: true,

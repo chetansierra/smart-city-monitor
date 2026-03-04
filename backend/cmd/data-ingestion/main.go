@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -86,12 +87,13 @@ func main() {
 
 	// Create ingestion service
 	service := &IngestionService{
-		db:           db,
-		redis:        redisClient,
-		batchSize:    100,
-		batchBuffer:  make([]models.SensorReading, 0, 100),
-		mu:           &sync.Mutex{},
-		messageCount: 0,
+		db:            db,
+		redis:         redisClient,
+		batchSize:     100,
+		batchBuffer:   make([]models.SensorReading, 0, 100),
+		mu:            &sync.Mutex{},
+		messageCount:  0,
+		retentionDays: cfg.Data.RetentionDays,
 	}
 
 	// Setup context for graceful shutdown
@@ -100,6 +102,9 @@ func main() {
 
 	// Start batch flusher
 	go service.startBatchFlusher(ctx)
+
+	// Start retention cleaner
+	go service.startRetentionCleaner(ctx)
 
 	// Start consuming messages
 	go func() {
@@ -130,12 +135,13 @@ func main() {
 
 // IngestionService handles data ingestion
 type IngestionService struct {
-	db           *postgres.DB
-	redis        *redis.Client
-	batchSize    int
-	batchBuffer  []models.SensorReading
-	mu           *sync.Mutex
-	messageCount int
+	db            *postgres.DB
+	redis         *redis.Client
+	batchSize     int
+	batchBuffer   []models.SensorReading
+	mu            *sync.Mutex
+	messageCount  int
+	retentionDays int
 }
 
 // handleMessage processes a single Kafka message
@@ -249,6 +255,51 @@ func (s *IngestionService) flushBatch() {
 
 	if batchSize >= 50 {
 		log.Debug().Int("batch_size", batchSize).Msg("Inserted batch into PostgreSQL")
+	}
+}
+
+// startRetentionCleaner periodically deletes old sensor readings.
+func (s *IngestionService) startRetentionCleaner(ctx context.Context) {
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+
+	retentionInterval := fmt.Sprintf("%d days", s.retentionDays)
+	log.Info().Str("retention", retentionInterval).Msg("Starting data retention cleaner (runs every 6h)")
+
+	for {
+		select {
+		case <-ticker.C:
+			s.runRetentionCleanup(ctx, retentionInterval)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *IngestionService) runRetentionCleanup(ctx context.Context, retentionInterval string) {
+	const batchLimit = 10000
+	totalDeleted := int64(0)
+
+	for {
+		result, err := s.db.ExecContext(ctx,
+			`DELETE FROM sensor_readings WHERE ctid IN (
+				SELECT ctid FROM sensor_readings
+				WHERE timestamp < NOW() - $1::interval
+				LIMIT $2
+			)`, retentionInterval, batchLimit)
+		if err != nil {
+			log.Error().Err(err).Msg("Retention cleaner: failed to delete old readings")
+			break
+		}
+		affected, _ := result.RowsAffected()
+		totalDeleted += affected
+		if affected < batchLimit {
+			break
+		}
+	}
+
+	if totalDeleted > 0 {
+		log.Info().Int64("deleted_rows", totalDeleted).Str("retention", retentionInterval).Msg("Retention cleaner: purged old readings")
 	}
 }
 

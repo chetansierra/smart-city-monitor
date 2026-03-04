@@ -4,6 +4,7 @@
 .env.*.local
 .env.backup
 .env.tmp
+.env.prod
 
 # Logs
 *.log

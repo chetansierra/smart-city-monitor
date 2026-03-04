@@ -28,7 +28,8 @@ const (
 	defaultSpawnRadiusKm = 5.0
 	minSpawnRadiusKm     = 1.0
 	maxSpawnRadiusKm     = 100.0
-	maxSensorsPerUser    = 50
+	maxSensorsPerUser    = 20
+	maxSensorsGlobal     = 100
 	earthRadiusKm        = 6371.0
 )
 
@@ -313,7 +314,28 @@ func (h *SensorsHandler) StartSensor(c *fiber.Ctx) error {
 			Success: false,
 			Error: &APIError{
 				Code:    "SENSOR_LIMIT_REACHED",
-				Message: fmt.Sprintf("Maximum %d sensors allowed", maxSensorsPerUser),
+				Message: fmt.Sprintf("Maximum %d sensors per session allowed", maxSensorsPerUser),
+			},
+		})
+	}
+
+	globalCount, err := h.db.CountAllActiveSensors(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to count global sensors")
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "DATABASE_ERROR",
+				Message: "Failed to validate global sensor limit",
+			},
+		})
+	}
+	if globalCount >= maxSensorsGlobal {
+		return c.Status(fiber.StatusConflict).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "GLOBAL_SENSOR_LIMIT_REACHED",
+				Message: "Global sensor limit reached. Please try again later.",
 			},
 		})
 	}
@@ -659,6 +681,33 @@ func (h *SensorsHandler) StartInactivityMonitor(ctx context.Context) {
 					}
 					_ = h.redisClient.PublishSimulationCommand(ctx, cmd)
 					delete(activeSessions, idStr)
+				}
+			}
+
+			// 3. Shutdown sensors running longer than 1 hour
+			expiredSensors, err := h.db.GetSensorsOlderThan(ctx, 1*time.Hour)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to query expired sensors")
+			} else if len(expiredSensors) > 0 {
+				log.Info().Int("count", len(expiredSensors)).Msg("Auto-shutting down sensors older than 1 hour")
+				for _, sensor := range expiredSensors {
+					if _, delErr := h.db.DeleteSensorByID(ctx, sensor.ID); delErr != nil {
+						log.Error().Err(delErr).Str("sensor_id", sensor.ID.String()).Msg("Failed to delete expired sensor")
+						continue
+					}
+					// Clean up Redis keys
+					h.redisClient.Del(ctx,
+						fmt.Sprintf("sensor:latest:%s", sensor.ID.String()),
+						fmt.Sprintf("sensor:stream:%s", sensor.ID.String()),
+					)
+					// Notify simulator to stop generating data
+					_ = h.redisClient.PublishSimulationCommand(ctx, redis.SimulationCommand{
+						Type: redis.CommandDeleteSensor,
+						Payload: map[string]interface{}{
+							"id": sensor.ID.String(),
+						},
+					})
+					log.Info().Str("sensor_id", sensor.ID.String()).Msg("Auto-deleted expired sensor")
 				}
 			}
 

@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS sensor_aggregates (
     id BIGSERIAL PRIMARY KEY,
     sensor_id UUID,
+    session_id UUID,
     sensor_type VARCHAR(50) NOT NULL,
     aggregation_type VARCHAR(20) NOT NULL CHECK (aggregation_type IN ('hourly', 'daily')),
     avg_value DECIMAL(10, 2) NOT NULL,
@@ -21,3 +22,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sensor_aggregates_unique
 -- Add comments
 COMMENT ON TABLE sensor_aggregates IS 'Pre-computed hourly and daily statistics for sensor data';
 COMMENT ON COLUMN sensor_aggregates.aggregation_type IS 'Type of aggregation: hourly or daily';
+COMMENT ON COLUMN sensor_aggregates.session_id IS 'Session that owns this sensor, NULL for seeded sensors';

@@ -81,11 +81,6 @@ func (h *HealthHandler) Check(c *fiber.Ctx) error {
 	// Check last data timestamp from Redis
 	var lastDataReceived string
 	var messageCount int64
-	if incrCount, err := h.redisClient.Incr(ctx, "health:message_count_check"); err == nil {
-		// Decrement back since we're just checking
-		h.redisClient.Incr(ctx, "health:message_count_check")
-		messageCount = incrCount
-	}
 
 	// Try to get a recent sensor reading timestamp
 	if sensors, err := h.db.GetAllSensors(ctx); err == nil && len(sensors) > 0 {

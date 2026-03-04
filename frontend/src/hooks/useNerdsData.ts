@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { API_BASE_URL, GOOGLE_MAPS_API_KEY } from '../constants/app';
 import type { NerdStatsData, SensorFootprintData, SessionNerdStatsData, StreamMessage } from '../types/app';
+import { useSSEConnection } from './useSSEConnection';
 
 interface Params {
   sessionId: string;
@@ -15,15 +16,23 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
   const [nerdStatsError, setNerdStatsError] = useState<string>('');
   const [globalFootprint, setGlobalFootprint] = useState<SensorFootprintData | null>(null);
   const [globalFootprintLoading, setGlobalFootprintLoading] = useState(false);
-  const lastSessionRefreshRef = useRef(0);
 
+  const isNerds = activeNav === 'nerds';
+
+  // SSE connection for live stats_update events (shared singleton)
+  useSSEConnection(sessionId, isNerds, (payload: StreamMessage) => {
+    if (payload.type === 'stats_update' && payload.data) {
+      setNerdStats(payload.data as NerdStatsData);
+      setNerdStatsError('');
+      setNerdStatsLoading(false);
+    }
+  });
+
+  // Polling for nerd stats, session stats, and global footprint
   useEffect(() => {
-    if (activeNav !== 'nerds') return;
+    if (!isNerds) return;
 
     let cancelled = false;
-    const streamUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '/stream');
-    const streamEndpoint = new URL(streamUrl, window.location.origin);
-    streamEndpoint.searchParams.set('session_id', sessionId);
 
     const fetchGlobalNerdStats = async () => {
       if (!cancelled && !nerdStats) setNerdStatsLoading(true);
@@ -85,41 +94,9 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
     void fetchGlobalNerdStats();
     void fetchSessionNerdStats();
     void fetchGlobalFootprint();
-    const globalTimer = window.setInterval(fetchGlobalNerdStats, 20000);
-    const sessionTimer = window.setInterval(fetchSessionNerdStats, 12000);
-    const footprintTimer = window.setInterval(fetchGlobalFootprint, 45000);
-
-    const maybeRefreshSession = () => {
-      const now = Date.now();
-      if (now - lastSessionRefreshRef.current < 1500) return;
-      lastSessionRefreshRef.current = now;
-      void fetchSessionNerdStats();
-    };
-
-    const source = new EventSource(streamEndpoint.toString());
-    source.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as StreamMessage;
-        if (payload.type === 'stats_update' && payload.data) {
-          if (!cancelled) {
-            setNerdStats(payload.data as NerdStatsData);
-            setNerdStatsError('');
-            setNerdStatsLoading(false);
-          }
-          maybeRefreshSession();
-          return;
-        }
-
-        if (payload.type === 'sensor_update') {
-          maybeRefreshSession();
-        }
-      } catch {
-        // ignore malformed stream payload
-      }
-    };
-    source.onerror = () => {
-      // keep fallback polling active; avoid noisy UI
-    };
+    const globalTimer = window.setInterval(fetchGlobalNerdStats, 60000);
+    const sessionTimer = window.setInterval(fetchSessionNerdStats, 30000);
+    const footprintTimer = window.setInterval(fetchGlobalFootprint, 120000);
 
     const refreshOnVisible = () => {
       if (document.visibilityState !== 'visible') return;
@@ -132,7 +109,6 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
 
     return () => {
       cancelled = true;
-      source.close();
       window.clearInterval(globalTimer);
       window.clearInterval(sessionTimer);
       window.clearInterval(footprintTimer);
@@ -140,7 +116,7 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
       document.removeEventListener('visibilitychange', refreshOnVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeNav, sessionId]);
+  }, [isNerds, sessionId]);
 
   return {
     nerdStats,

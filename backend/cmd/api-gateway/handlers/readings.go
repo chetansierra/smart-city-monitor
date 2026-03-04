@@ -147,40 +147,29 @@ func (h *ReadingsHandler) GetAll(c *fiber.Ctx) error {
 				},
 			})
 		}
+		// Filter by sensor type if specified
+		if sensorType != "" {
+			filtered := make([]models.SensorReading, 0)
+			for _, reading := range readings {
+				if string(reading.SensorType) == sensorType {
+					filtered = append(filtered, reading)
+				}
+			}
+			readings = filtered
+		}
 	} else {
-		// Get readings for all sensors (need to query all sensors first)
-		sensors, err := h.db.GetAllSensors(ctx)
+		// Get readings for all sensors in a single query
+		readings, err = h.db.GetReadingsInTimeRangeForAllSensors(ctx, from, to, sensorType)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to fetch sensors")
+			log.Error().Err(err).Msg("Failed to fetch readings")
 			return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
 				Success: false,
 				Error: &APIError{
 					Code:    "DATABASE_ERROR",
-					Message: "Failed to fetch sensors",
+					Message: "Failed to fetch readings",
 				},
 			})
 		}
-
-		// Fetch readings for all sensors
-		for _, sensor := range sensors {
-			sensorReadings, err := h.db.GetReadingsInTimeRange(ctx, sensor.ID, from, to)
-			if err != nil {
-				log.Error().Err(err).Str("sensor_id", sensor.ID.String()).Msg("Failed to fetch readings for sensor")
-				continue
-			}
-			readings = append(readings, sensorReadings...)
-		}
-	}
-
-	// Filter by sensor type if specified
-	if sensorType != "" {
-		filtered := make([]models.SensorReading, 0)
-		for _, reading := range readings {
-			if string(reading.SensorType) == sensorType {
-				filtered = append(filtered, reading)
-			}
-		}
-		readings = filtered
 	}
 
 	// Sort readings

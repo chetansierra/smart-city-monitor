@@ -75,21 +75,14 @@ func RateLimiter(config RateLimitConfig) fiber.Handler {
 			}
 		}
 
-		// Get TTL for rate limit headers
-		ttl, err := config.RedisClient.TTL(ctx, key)
-		if err != nil {
-			log.Error().Err(err).Str("key", key).Msg("Failed to get rate limit TTL")
-			ttl = config.Window
-		}
-
-		// Set rate limit headers
+		// Set rate limit headers (use config.Window as reset estimate to avoid extra Redis TTL call)
 		c.Set("X-RateLimit-Limit", strconv.Itoa(config.Max))
 		c.Set("X-RateLimit-Remaining", strconv.Itoa(max(0, config.Max-int(count))))
-		c.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(ttl).Unix(), 10))
+		c.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(config.Window).Unix(), 10))
 
 		// Check if limit exceeded
 		if count > int64(config.Max) {
-			c.Set("Retry-After", strconv.FormatInt(int64(ttl.Seconds()), 10))
+			c.Set("Retry-After", strconv.FormatInt(int64(config.Window.Seconds()), 10))
 			log.Warn().
 				Str("key", key).
 				Int64("count", count).

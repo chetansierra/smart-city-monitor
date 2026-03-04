@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { API_BASE_URL, TREND_MAX_POINTS } from '../constants/app';
 import { computeSummary } from '../lib/chart';
 import type { HomeSummary, LatestReading, MetricKey, SensorRecord, StreamMessage, TrendPoint } from '../types/app';
+import { useSSEConnection } from './useSSEConnection';
 
 interface Params {
   sessionId: string;
@@ -48,7 +49,7 @@ export function useLiveSensorData({ sessionId, hasUserSensor, userSensors, activ
     };
 
     loadLatest();
-    const timer = window.setInterval(loadLatest, 30000);
+    const timer = window.setInterval(loadLatest, 60000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -184,33 +185,13 @@ export function useLiveSensorData({ sessionId, hasUserSensor, userSensors, activ
     });
   }, [hasUserSensor, summary.averages]);
 
-  // SSE connection for live sensor_update events
-  useEffect(() => {
-    if (!hasUserSensor) return;
-
-    const streamUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '/stream');
-    const url = new URL(streamUrl, window.location.origin);
-    url.searchParams.set('session_id', sessionId);
-
-    const source = new EventSource(url.toString());
-    source.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as StreamMessage;
-        if (payload.type !== 'sensor_update' || !payload.data) return;
-
-        const reading = payload.data as LatestReading;
-        if (!reading.sensor_id || !userSensorIdSetRef.current.has(reading.sensor_id)) return;
-
-        setLatestBySensor((prev) => ({ ...prev, [reading.sensor_id]: reading }));
-      } catch {
-        // ignore malformed stream payload
-      }
-    };
-
-    return () => {
-      source.close();
-    };
-  }, [hasUserSensor, sessionId]);
+  // SSE connection for live sensor_update events (shared singleton)
+  useSSEConnection(sessionId, hasUserSensor, (payload: StreamMessage) => {
+    if (payload.type !== 'sensor_update' || !payload.data) return;
+    const reading = payload.data as LatestReading;
+    if (!reading.sensor_id || !userSensorIdSetRef.current.has(reading.sensor_id)) return;
+    setLatestBySensor((prev) => ({ ...prev, [reading.sensor_id]: reading }));
+  });
 
   return {
     latestBySensor,

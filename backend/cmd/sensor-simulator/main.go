@@ -228,7 +228,7 @@ func (s *Simulator) Start() {
 }
 
 func (s *Simulator) syncSensorsFromDB(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	for {

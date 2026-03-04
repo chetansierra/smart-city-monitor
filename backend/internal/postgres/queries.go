@@ -119,7 +119,9 @@ func (db *DB) CountSensorsBySession(ctx context.Context, sessionID uuid.UUID) (i
 	return count, nil
 }
 
-// UpdateSensorsStatus updates status for the provided sensor IDs.
+// UpdateSensorsStatus updates the status for the provided sensor IDs.
+// Since migration 009 enforces status = 'active', this is effectively a no-op
+// that confirms the sensors exist. Only call with SensorStatusActive.
 func (db *DB) UpdateSensorsStatus(ctx context.Context, sensorIDs []uuid.UUID, status models.SensorStatus) error {
 	if len(sensorIDs) == 0 {
 		return nil
@@ -165,6 +167,59 @@ func (db *DB) DeleteSensorByIDAndSession(ctx context.Context, id uuid.UUID, sess
 		return false, fmt.Errorf("failed to inspect delete result: %w", err)
 	}
 
+	return rowsAffected > 0, nil
+}
+
+// CountAllActiveSensors returns the total number of sensors in the database.
+func (db *DB) CountAllActiveSensors(ctx context.Context) (int, error) {
+	query := `SELECT COUNT(*) FROM sensors`
+	var count int
+	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count all sensors: %w", err)
+	}
+	return count, nil
+}
+
+// GetSensorsOlderThan returns sensors created more than the given duration ago.
+func (db *DB) GetSensorsOlderThan(ctx context.Context, age time.Duration) ([]models.Sensor, error) {
+	query := `
+		SELECT id, session_id, name, type, latitude, longitude, status, config, created_at, updated_at
+		FROM sensors
+		WHERE created_at < NOW() - $1::interval
+	`
+
+	rows, err := db.QueryContext(ctx, query, fmt.Sprintf("%d seconds", int(age.Seconds())))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query expired sensors: %w", err)
+	}
+	defer rows.Close()
+
+	var sensors []models.Sensor
+	for rows.Next() {
+		var s models.Sensor
+		if err := rows.Scan(
+			&s.ID, &s.SessionID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
+			&s.Status, &s.Config, &s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan expired sensor: %w", err)
+		}
+		s.Location = models.Location{Latitude: s.Latitude, Longitude: s.Longitude}
+		sensors = append(sensors, s)
+	}
+	return sensors, rows.Err()
+}
+
+// DeleteSensorByID deletes a sensor by ID regardless of session ownership.
+func (db *DB) DeleteSensorByID(ctx context.Context, id uuid.UUID) (bool, error) {
+	query := `DELETE FROM sensors WHERE id = $1`
+	result, err := db.ExecContext(ctx, query, id)
+	if err != nil {
+		return false, fmt.Errorf("failed to delete sensor: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect delete result: %w", err)
+	}
 	return rowsAffected > 0, nil
 }
 
@@ -298,6 +353,50 @@ func (db *DB) GetReadingsInTimeRange(ctx context.Context, sensorID uuid.UUID, fr
 		readings = append(readings, r)
 	}
 
+	return readings, rows.Err()
+}
+
+// GetReadingsInTimeRangeForAllSensors retrieves readings across all sensors within a time range.
+func (db *DB) GetReadingsInTimeRangeForAllSensors(ctx context.Context, from, to time.Time, sensorType string) ([]models.SensorReading, error) {
+	var query string
+	var args []interface{}
+
+	if sensorType != "" {
+		query = `
+			SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
+			FROM sensor_readings
+			WHERE timestamp >= $1 AND timestamp <= $2 AND sensor_type = $3
+			ORDER BY timestamp DESC
+		`
+		args = []interface{}{from, to, sensorType}
+	} else {
+		query = `
+			SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
+			FROM sensor_readings
+			WHERE timestamp >= $1 AND timestamp <= $2
+			ORDER BY timestamp DESC
+		`
+		args = []interface{}{from, to}
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query readings for all sensors: %w", err)
+	}
+	defer rows.Close()
+
+	var readings []models.SensorReading
+	for rows.Next() {
+		var r models.SensorReading
+		if err := rows.Scan(
+			&r.ID, &r.SensorID, &r.SessionID, &r.SensorType, &r.Value, &r.Unit,
+			&r.Latitude, &r.Longitude, &r.Timestamp,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan reading: %w", err)
+		}
+		r.Location = models.Location{Latitude: r.Latitude, Longitude: r.Longitude}
+		readings = append(readings, r)
+	}
 	return readings, rows.Err()
 }
 

@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IBM/sarama"
 	"github.com/chetansierra/smart-city-monitor/cmd/api-gateway/handlers"
 	"github.com/chetansierra/smart-city-monitor/internal/config"
 	"github.com/chetansierra/smart-city-monitor/internal/logger"
@@ -76,19 +75,6 @@ func main() {
 	defer redisClient.Close()
 	log.Info().Msg("Connected to Redis")
 
-	// Create Kafka producer for admin control commands
-	kafkaConfig := sarama.NewConfig()
-	kafkaConfig.Producer.RequiredAcks = sarama.WaitForAll
-	kafkaConfig.Producer.Retry.Max = 5
-	kafkaConfig.Producer.Return.Successes = true
-
-	kafkaProducer, err := sarama.NewSyncProducer(cfg.Kafka.Brokers, kafkaConfig)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create Kafka producer")
-	}
-	defer kafkaProducer.Close()
-	log.Info().Msg("Kafka producer created")
-
 	// Create SSE broadcaster
 	broadcaster := sse.NewBroadcaster()
 	go broadcaster.Listen()
@@ -97,6 +83,7 @@ func main() {
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:      "Smart City API Gateway",
+		BodyLimit:    10 * 1024 * 1024, // 10MB
 		ErrorHandler: customErrorHandler,
 	})
 
@@ -106,7 +93,7 @@ func main() {
 
 	// CORS middleware
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*", // Allow all origins for development (restrict in production)
+		AllowOrigins: cfg.API.AllowedOrigins,
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Session-ID",
 	}))
@@ -121,7 +108,6 @@ func main() {
 	// Security middleware
 	app.Use(middleware.SecurityHeaders())
 	app.Use(middleware.ValidateContentType())
-	app.Use(middleware.RequestSizeLimit(10 * 1024 * 1024)) // 10MB limit
 	app.Use(middleware.SanitizeInput())
 
 	// Create handlers
@@ -131,7 +117,7 @@ func main() {
 	analyticsHandler := handlers.NewAnalyticsHandler(db, redisClient)
 	sseHandler := handlers.NewSSEHandler(broadcaster, redisClient)
 	metricsHandler := handlers.NewMetricsHandler(db, redisClient, broadcaster, cfg.Kafka.Brokers)
-	adminHandler := handlers.NewAdminHandler(db, redisClient, kafkaProducer)
+	adminHandler := handlers.NewAdminHandler(db, redisClient)
 	pipelineHandler := handlers.NewPipelineHandler(redisClient, cfg.Kafka.Brokers)
 
 	// Start Redis Pub/Sub listener for real-time updates

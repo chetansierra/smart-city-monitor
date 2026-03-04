@@ -232,7 +232,6 @@ const sessionHeartbeatTTL = 24 * time.Hour
 const sessionStreamTTL = 90 * time.Second
 const sessionStreamMaxLen = 180
 const sessionConfigTTL = 24 * time.Hour
-const statsVisitorsTotalKey = "stats:visitors:total"
 const statsVisitorsSeenKey = "stats:visitors:seen_sessions"
 const statsGoroutinesGlobalKey = "stats:goroutines:global"
 const statsSessionWorkersPrefix = "stats:session:workers:"
@@ -298,36 +297,23 @@ func (c *Client) GetSessionConfig(ctx context.Context, sessionID uuid.UUID) (Ses
 	return cfg, true, nil
 }
 
-// RegisterSessionVisit increments total unique visitors once per new session ID.
+// RegisterSessionVisit records a visitor via HyperLogLog (fixed ~12KB memory).
 func (c *Client) RegisterSessionVisit(ctx context.Context, sessionID uuid.UUID) (bool, error) {
-	added, err := c.SAdd(ctx, statsVisitorsSeenKey, sessionID.String()).Result()
+	added, err := c.PFAdd(ctx, statsVisitorsSeenKey, sessionID.String()).Result()
 	if err != nil {
 		return false, err
 	}
-	if added > 0 {
-		if _, err := c.Incr(ctx, statsVisitorsTotalKey); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	return false, nil
+	return added > 0, nil
 }
 
-// GetTotalVisitors returns the total unique sessions ever seen.
+// GetTotalVisitors returns the approximate unique sessions ever seen (HyperLogLog).
 func (c *Client) GetTotalVisitors(ctx context.Context) (int64, error) {
-	value, err := c.Get(ctx, statsVisitorsTotalKey).Int64()
-	if err == redis.Nil {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return value, nil
+	return c.PFCount(ctx, statsVisitorsSeenKey).Result()
 }
 
 // SetGlobalGoroutines stores the latest process-wide goroutine count.
 func (c *Client) SetGlobalGoroutines(ctx context.Context, count int64) error {
-	return c.Set(ctx, statsGoroutinesGlobalKey, count, 0).Err()
+	return c.Set(ctx, statsGoroutinesGlobalKey, count, 5*time.Minute).Err()
 }
 
 // GetGlobalGoroutines retrieves the latest process-wide goroutine count.
@@ -427,12 +413,19 @@ func (c *Client) AppendSessionEvent(ctx context.Context, sessionID string, paylo
 		return nil
 	}
 	key := fmt.Sprintf("session:events:%s", sessionID)
-	pipe := c.TxPipeline()
-	pipe.LPush(ctx, key, payload)
-	pipe.LTrim(ctx, key, 0, sessionStreamMaxLen-1)
-	pipe.Expire(ctx, key, sessionStreamTTL)
-	_, err := pipe.Exec(ctx)
-	return err
+	listLen, err := c.LPush(ctx, key, payload).Result()
+	if err != nil {
+		return err
+	}
+	// Only set expire when the key is new (first element pushed)
+	if listLen == 1 {
+		_ = c.Expire(ctx, key, sessionStreamTTL).Err()
+	}
+	// Periodically trim to prevent unbounded growth
+	if listLen > int64(sessionStreamMaxLen) {
+		_ = c.LTrim(ctx, key, 0, int64(sessionStreamMaxLen)-1).Err()
+	}
+	return nil
 }
 
 // GetSessionEvents returns cached live events for a session.

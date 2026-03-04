@@ -16,6 +16,7 @@ type Config struct {
 	Postgres  PostgresConfig
 	API       APIConfig
 	Simulator SimulatorConfig
+	Data      DataConfig
 	App       AppConfig
 }
 
@@ -50,9 +51,10 @@ type PostgresConfig struct {
 
 // APIConfig holds API server configuration
 type APIConfig struct {
-	Port          string
-	Host          string
-	WebSocketPath string
+	Port           string
+	Host           string
+	WebSocketPath  string
+	AllowedOrigins string
 }
 
 // SimulatorConfig holds sensor simulator configuration
@@ -62,6 +64,11 @@ type SimulatorConfig struct {
 	EnableRushHour        bool
 	EnableWeatherPatterns bool
 	StartEmpty            bool
+}
+
+// DataConfig holds data retention settings
+type DataConfig struct {
+	RetentionDays int
 }
 
 // AppConfig holds general application settings
@@ -101,9 +108,10 @@ func Load() (*Config, error) {
 			MaxIdleConnections: getEnvAsInt("POSTGRES_MAX_IDLE_CONNECTIONS", 5),
 		},
 		API: APIConfig{
-			Port:          getEnv("API_PORT", "8080"),
-			Host:          getEnv("API_HOST", "0.0.0.0"),
-			WebSocketPath: getEnv("WEBSOCKET_PATH", "/ws"),
+			Port:           getEnv("API_PORT", "8080"),
+			Host:           getEnv("API_HOST", "0.0.0.0"),
+			WebSocketPath:  getEnv("WEBSOCKET_PATH", "/ws"),
+			AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
 		},
 		Simulator: SimulatorConfig{
 			SensorCount:           getEnvAsInt("SENSOR_COUNT", 50),
@@ -111,6 +119,9 @@ func Load() (*Config, error) {
 			EnableRushHour:        getEnvAsBool("ENABLE_RUSH_HOUR", true),
 			EnableWeatherPatterns: getEnvAsBool("ENABLE_WEATHER_PATTERNS", true),
 			StartEmpty:            getEnvAsBool("SIMULATOR_START_EMPTY", false),
+		},
+		Data: DataConfig{
+			RetentionDays: getEnvAsInt("RETENTION_DAYS", 7),
 		},
 		App: AppConfig{
 			LogLevel:    getEnvWithFallback("LOG_LEVEL", "info", "APP_LOG_LEVEL"),
@@ -149,8 +160,6 @@ func (c *Config) Validate(service string) error {
 	require("KAFKA_TOPIC_SENSOR_READINGS", c.Kafka.TopicSensorReadings)
 
 	switch service {
-	case "api-gateway":
-		require("KAFKA_TOPIC_ADMIN_COMMANDS", c.Kafka.TopicAdminCommands)
 	case "data-ingestion":
 		require("KAFKA_CONSUMER_GROUP_INGESTION", c.Kafka.ConsumerGroupIngestion)
 	case "sensor-simulator":

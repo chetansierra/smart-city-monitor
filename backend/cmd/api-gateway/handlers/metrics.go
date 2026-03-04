@@ -34,6 +34,9 @@ type MetricsHandler struct {
 	lastSampleAt time.Time
 	lastKafkaMsg int64
 	lastRedisCmd int64
+	kafkaMu      sync.Mutex
+	kafkaAdmin   sarama.ClusterAdmin
+	kafkaClient  sarama.Client
 }
 
 // NewMetricsHandler creates a new metrics handler
@@ -228,15 +231,57 @@ type SessionNerdStatsResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// getOrCreateKafkaAdmin returns a cached or new Kafka ClusterAdmin.
+func (h *MetricsHandler) getOrCreateKafkaAdmin() (sarama.ClusterAdmin, error) {
+	h.kafkaMu.Lock()
+	defer h.kafkaMu.Unlock()
+
+	if h.kafkaAdmin != nil {
+		// Quick health check — if broken, recreate
+		if _, _, err := h.kafkaAdmin.DescribeCluster(); err == nil {
+			return h.kafkaAdmin, nil
+		}
+		h.kafkaAdmin.Close()
+		h.kafkaAdmin = nil
+	}
+
+	cfg := sarama.NewConfig()
+	cfg.Version = sarama.V2_6_0_0
+	cfg.Admin.Timeout = 5 * time.Second
+
+	admin, err := sarama.NewClusterAdmin(h.kafkaBrokers, cfg)
+	if err != nil {
+		return nil, err
+	}
+	h.kafkaAdmin = admin
+	return admin, nil
+}
+
+// getOrCreateKafkaClient returns a cached or new Kafka Client.
+func (h *MetricsHandler) getOrCreateKafkaClient() (sarama.Client, error) {
+	h.kafkaMu.Lock()
+	defer h.kafkaMu.Unlock()
+
+	if h.kafkaClient != nil && !h.kafkaClient.Closed() {
+		return h.kafkaClient, nil
+	}
+
+	cfg := sarama.NewConfig()
+	cfg.Version = sarama.V2_6_0_0
+
+	client, err := sarama.NewClient(h.kafkaBrokers, cfg)
+	if err != nil {
+		return nil, err
+	}
+	h.kafkaClient = client
+	return client, nil
+}
+
 // GetKafkaMetrics returns Kafka metrics
 func (h *MetricsHandler) GetKafkaMetrics(c *fiber.Ctx) error {
 	ctx := context.Background()
 
-	// Create Kafka admin client
-	config := sarama.NewConfig()
-	config.Version = sarama.V2_6_0_0
-
-	admin, err := sarama.NewClusterAdmin(h.kafkaBrokers, config)
+	admin, err := h.getOrCreateKafkaAdmin()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create Kafka admin client")
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -247,7 +292,6 @@ func (h *MetricsHandler) GetKafkaMetrics(c *fiber.Ctx) error {
 			},
 		})
 	}
-	defer admin.Close()
 
 	// Get broker information
 	brokers, _, err := admin.DescribeCluster()
@@ -281,42 +325,34 @@ func (h *MetricsHandler) GetKafkaMetrics(c *fiber.Ctx) error {
 		topicNames = append(topicNames, topicName)
 	}
 
-	// Create a consumer to fetch metadata
-	consumer, err := sarama.NewConsumer(h.kafkaBrokers, config)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create Kafka consumer for metadata")
-	}
+	// Use cached client for partition metadata
+	kafkaClient, clientErr := h.getOrCreateKafkaClient()
 
 	// Build topic metrics
 	var topicMetrics []TopicMetrics
 	totalPartitions := 0
 
 	for _, topicName := range topicNames {
-		partitions, err := consumer.Partitions(topicName)
-		if err != nil {
-			log.Error().Err(err).Str("topic", topicName).Msg("Failed to get partitions")
-			continue
-		}
-
-		partitionCount := len(partitions)
-		totalPartitions += partitionCount
-
 		topicDetail := topicsMap[topicName]
 		replicationFactor := int(topicDetail.ReplicationFactor)
 		if replicationFactor == -1 {
-			replicationFactor = 1 // Default
+			replicationFactor = 1
 		}
 
+		partitionCount := len(topicDetail.ReplicaAssignment)
+		if kafkaClient != nil && clientErr == nil {
+			if partitions, pErr := kafkaClient.Partitions(topicName); pErr == nil {
+				partitionCount = len(partitions)
+			}
+		}
+
+		totalPartitions += partitionCount
 		topicMetrics = append(topicMetrics, TopicMetrics{
 			Name:              topicName,
 			Partitions:        partitionCount,
 			ReplicationFactor: replicationFactor,
-			MessagesPerSec:    0, // TODO: Calculate from consumer lag changes over time
+			MessagesPerSec:    0,
 		})
-	}
-
-	if consumer != nil {
-		consumer.Close()
 	}
 
 	// Get consumer group information
@@ -369,6 +405,7 @@ func (h *MetricsHandler) getConsumerGroupMetrics(admin sarama.ClusterAdmin, grou
 	// List offsets for each topic this consumer group is subscribed to
 	groupOffsets, err := admin.ListConsumerGroupOffsets(groupID, nil)
 	if err == nil {
+		kafkaClient, clientErr := h.getOrCreateKafkaClient()
 		for topic, partitions := range groupOffsets.Blocks {
 			topicLag := TopicLag{
 				Topic:      topic,
@@ -377,29 +414,26 @@ func (h *MetricsHandler) getConsumerGroupMetrics(admin sarama.ClusterAdmin, grou
 			}
 
 			for partition, offsetBlock := range partitions {
-				// Get high water mark for partition
-				client, err := sarama.NewClient(h.kafkaBrokers, sarama.NewConfig())
-				if err == nil {
-					hwm, err := client.GetOffset(topic, partition, sarama.OffsetNewest)
-					if err == nil {
-						lag := hwm - offsetBlock.Offset
-						if lag < 0 {
-							lag = 0
-						}
-
-						partitionLag := PartitionLag{
-							Partition:     partition,
-							CurrentOffset: offsetBlock.Offset,
-							LogEndOffset:  hwm,
-							Lag:           lag,
-						}
-
-						topicLag.Partitions = append(topicLag.Partitions, partitionLag)
-						topicLag.TotalLag += lag
-						totalLag += lag
-					}
-					client.Close()
+				if kafkaClient == nil || clientErr != nil {
+					continue
 				}
+				hwm, hwmErr := kafkaClient.GetOffset(topic, partition, sarama.OffsetNewest)
+				if hwmErr != nil {
+					continue
+				}
+				lag := hwm - offsetBlock.Offset
+				if lag < 0 {
+					lag = 0
+				}
+
+				topicLag.Partitions = append(topicLag.Partitions, PartitionLag{
+					Partition:     partition,
+					CurrentOffset: offsetBlock.Offset,
+					LogEndOffset:  hwm,
+					Lag:           lag,
+				})
+				topicLag.TotalLag += lag
+				totalLag += lag
 			}
 
 			if len(topicLag.Partitions) > 0 {
@@ -632,10 +666,19 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if sessionUUID, err := uuid.Parse(sessionID); err == nil {
-		if hbErr := h.redisClient.SetSessionHeartbeat(ctx, sessionUUID); hbErr != nil {
-			log.Warn().Err(hbErr).Str("session_id", sessionID).Msg("Failed to renew session heartbeat from stats endpoint")
-		}
+	sessionUUID, parseErr := uuid.Parse(sessionID)
+	if parseErr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error": fiber.Map{
+				"code":    "INVALID_SESSION_ID",
+				"message": "Invalid session ID format",
+			},
+		})
+	}
+
+	if hbErr := h.redisClient.SetSessionHeartbeat(ctx, sessionUUID); hbErr != nil {
+		log.Warn().Err(hbErr).Str("session_id", sessionID).Msg("Failed to renew session heartbeat from stats endpoint")
 	}
 
 	resp := SessionNerdStatsResponse{}
@@ -643,11 +686,7 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 	resp.System.UptimeSec = int64(time.Since(h.startedAt).Seconds())
 	resp.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
-	globalGoroutines, goroutinesErr := h.redisClient.GetGlobalGoroutines(ctx)
-	if goroutinesErr != nil {
-		log.Warn().Err(goroutinesErr).Msg("Failed to read global goroutines from Redis gauge")
-		globalGoroutines = int64(runtime.NumGoroutine())
-	}
+	globalGoroutines := int64(runtime.NumGoroutine())
 	resp.System.GlobalGoroutines = globalGoroutines
 	resp.System.Goroutines = int(globalGoroutines)
 
@@ -660,8 +699,8 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 	if err := h.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM sensors
-		WHERE session_id::text = $1
-	`, sessionID).Scan(&resp.Session.Sensors); err != nil {
+		WHERE session_id = $1
+	`, sessionUUID).Scan(&resp.Session.Sensors); err != nil {
 		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session sensors count")
 	}
 
@@ -672,8 +711,8 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 			COALESCE(AVG(value), 0),
 			MAX(timestamp)
 		FROM sensor_readings
-		WHERE session_id::text = $1
-	`, sessionID).Scan(&resp.Session.Readings, &resp.Session.AvgSensorValue, &lastReadingAt); err != nil {
+		WHERE session_id = $1
+	`, sessionUUID).Scan(&resp.Session.Readings, &resp.Session.AvgSensorValue, &lastReadingAt); err != nil {
 		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session reading stats")
 	}
 	if lastReadingAt != nil {
@@ -683,9 +722,9 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 	if err := h.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM sensor_readings
-		WHERE session_id::text = $1
+		WHERE session_id = $1
 		  AND timestamp > NOW() - INTERVAL '1 minute'
-	`, sessionID).Scan(&resp.Session.ReadingsLastMin); err != nil {
+	`, sessionUUID).Scan(&resp.Session.ReadingsLastMin); err != nil {
 		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session minute throughput")
 	}
 
@@ -706,7 +745,7 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 
 // StartNerdStatsAggregator maintains a cached stats snapshot and pushes live deltas over SSE.
 func (h *MetricsHandler) StartNerdStatsAggregator(ctx context.Context) {
-	fastTicker := time.NewTicker(2 * time.Second)
+	fastTicker := time.NewTicker(10 * time.Second)
 	redisTicker := time.NewTicker(10 * time.Second)
 	deepTicker := time.NewTicker(45 * time.Second)
 	heartbeatTicker := time.NewTicker(15 * time.Second)
@@ -776,10 +815,6 @@ func (h *MetricsHandler) refreshRuntimeAndSessions(ctx context.Context) {
 	h.cachedStats = s
 	h.cacheReady = true
 	h.cacheMu.Unlock()
-
-	if err := h.redisClient.SetGlobalGoroutines(ctx, int64(s.System.Goroutines)); err != nil {
-		log.Warn().Err(err).Msg("Failed to update global goroutine gauge in Redis")
-	}
 }
 
 func (h *MetricsHandler) refreshRedisStats(ctx context.Context) {
@@ -824,8 +859,8 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 	}
 
 	var readings int64
-	if err := h.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sensor_readings").Scan(&readings); err != nil {
-		log.Warn().Err(err).Msg("Failed to read sensor_readings count for nerd stats")
+	if err := h.db.QueryRowContext(ctx, "SELECT COALESCE(reltuples, 0)::bigint FROM pg_class WHERE relname = 'sensor_readings'").Scan(&readings); err != nil {
+		log.Warn().Err(err).Msg("Failed to read sensor_readings count estimate for nerd stats")
 	}
 
 	var sessionsWithSensors int64
@@ -847,12 +882,7 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 	kafkaTotalPartitions := 0
 	kafkaTotalMessages := int64(0)
 
-	kafkaCfg := sarama.NewConfig()
-	kafkaCfg.Version = sarama.V2_6_0_0
-	kafkaCfg.Admin.Timeout = 5 * time.Second
-
-	admin, err := sarama.NewClusterAdmin(h.kafkaBrokers, kafkaCfg)
-	if err == nil {
+	if admin, adminErr := h.getOrCreateKafkaAdmin(); adminErr == nil {
 		if brokers, _, describeErr := admin.DescribeCluster(); describeErr == nil {
 			kafkaBrokerCount = len(brokers)
 		}
@@ -865,11 +895,9 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 				kafkaTotalPartitions += len(topic.ReplicaAssignment)
 			}
 		}
-		_ = admin.Close()
 	}
 
-	kafkaClient, err := sarama.NewClient(h.kafkaBrokers, kafkaCfg)
-	if err == nil {
+	if kafkaClient, clientErr := h.getOrCreateKafkaClient(); clientErr == nil {
 		if topics, topicErr := kafkaClient.Topics(); topicErr == nil {
 			for _, topic := range topics {
 				if strings.HasPrefix(topic, "__") {
@@ -888,7 +916,6 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 				}
 			}
 		}
-		_ = kafkaClient.Close()
 	}
 
 	h.cacheMu.Lock()
