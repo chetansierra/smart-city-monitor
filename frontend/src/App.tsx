@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import {
+  API_BASE_URL,
   DEFAULT_METRIC_FILTER,
   GOOGLE_MAPS_API_KEY,
   METRIC_COLORS,
@@ -18,10 +19,14 @@ import {
 import { buildMetricPath, clamp, formatMetricName } from './lib/chart';
 import { loadGoogleMaps } from './lib/maps';
 import { useLiveSensorData } from './hooks/useLiveSensorData';
+import { useSSEConnection } from './hooks/useSSEConnection';
 import { useNerdsData } from './hooks/useNerdsData';
+import { usePipelineData } from './hooks/usePipelineData';
 import { useSessionConfig } from './hooks/useSessionConfig';
 import { useUserSensors } from './hooks/useUserSensors';
 import type {
+  AnomalyEvent,
+  DetectedEvent,
   MetricKey,
   NavItem,
   SensorRecord,
@@ -75,6 +80,10 @@ function App() {
   const [hasUserSensor, setHasUserSensor] = useState(false);
   const [userSensors, setUserSensors] = useState<SensorRecord[]>([]);
 
+  // ── Anomaly / Event state ─────────────────────────────────────────────────
+  const [anomalies, setAnomalies] = useState<AnomalyEvent[]>([]);
+  const [detectedEvents, setDetectedEvents] = useState<DetectedEvent[]>([]);
+
   // ── Typing animation state ────────────────────────────────────────────────
   const [typedLines, setTypedLines] = useState<string[]>(() => TYPING_LINES.map(() => ''));
   const [activeTypingLine, setActiveTypingLine] = useState(0);
@@ -120,11 +129,41 @@ function App() {
     setSummary,
   });
 
-  const { nerdStats, sessionNerdStats, nerdStatsLoading, sessionNerdStatsLoading, nerdStatsError, globalFootprint, globalFootprintLoading } =
+  const { nerdStats, sessionNerdStats, nerdStatsLoading, sessionNerdStatsLoading, nerdStatsError, globalFootprint, globalFootprintLoading, refresh: refreshNerds } =
     useNerdsData({ sessionId, activeNav });
 
+  const { pipelineStats, pipelineLoading, refreshPipeline } = usePipelineData({ activeNav });
+
+  // ── SSE anomaly/event handler ────────────────────────────────────────────
+  useSSEConnection(sessionId, hasUserSensor, useCallback((payload) => {
+    if (payload.type === 'anomaly' && payload.data) {
+      const event = payload.data as AnomalyEvent;
+      setAnomalies((prev) => [event, ...prev].slice(0, 20));
+    }
+    if (payload.type === 'scenario_detected' && payload.data) {
+      const event = payload.data as DetectedEvent;
+      setDetectedEvents((prev) => {
+        const updated = [event, ...prev.filter((e) => e.event_type !== event.event_type || e.zone !== event.zone)];
+        return updated.slice(0, 10);
+      });
+    }
+  }, []));
+
+  // Auto-expire detected events
+  useEffect(() => {
+    if (detectedEvents.length === 0) return;
+    const timer = window.setInterval(() => {
+      const now = new Date().toISOString();
+      setDetectedEvents((prev) => prev.filter((e) => e.expires_at > now));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [detectedEvents.length]);
+
   // ── Derived values ────────────────────────────────────────────────────────
-  const canShowMap = hasUserSensor && locationPermission === 'granted' && Boolean(GOOGLE_MAPS_API_KEY);
+  // Map should init regardless of whether sensors exist yet — prevents race condition
+  // where map init waits for sensor API response. Markers are added independently.
+  const canInitMap = locationPermission === 'granted' && Boolean(GOOGLE_MAPS_API_KEY);
+  const canShowMap = hasUserSensor && canInitMap;
 
   const rollingWindowLabel = useMemo(() => {
     if (trendHistory.length < 2) return 'Live';
@@ -152,6 +191,20 @@ function App() {
   useEffect(() => { localStorage.setItem(METRIC_FILTER_KEY, JSON.stringify(metricFilter)); }, [metricFilter]);
   useEffect(() => { localStorage.setItem(ZOOM_LEVEL_KEY, String(zoomLevel)); }, [zoomLevel]);
   useEffect(() => { localStorage.setItem(NERD_SCOPE_KEY, nerdScope); }, [nerdScope]);
+
+  // ── Session heartbeat ───────────────────────────────────────────────────────
+  // No client-side teardown on unload — reload vs close is indistinguishable.
+  // Instead, the backend session heartbeat (renewed every stats poll) has a
+  // short TTL. A server-side monitor deletes sensors when the heartbeat expires.
+  // The frontend just keeps the heartbeat alive while the tab is open.
+  useEffect(() => {
+    // Send an immediate heartbeat on load
+    fetch(`${API_BASE_URL}/session/config`, {
+      headers: { 'X-Session-ID': sessionId },
+    }).catch(() => {});
+
+    // Heartbeat is also renewed by the session nerd-stats polling (every 1s)
+  }, [sessionId]);
 
   // ── Typing animation ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -183,9 +236,9 @@ function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Main map init ─────────────────────────────────────────────────────────
+  // ── Main map init (independent of sensor existence) ──────────────────────
   useEffect(() => {
-    if (!canShowMap || !mapContainerNode) {
+    if (!canInitMap || !mapContainerNode) {
       setMapReady(false);
       mapRef.current = null;
       mapRadiusCircleRef.current = null;
@@ -215,14 +268,20 @@ function App() {
     initMap();
     return () => {
       cancelled = true;
+      setMapReady(false);
+      // Clear stale markers so they get re-created on the new map instance
+      Object.values(mapMarkersRef.current).forEach((m: any) => m.setMap(null));
+      mapMarkersRef.current = {};
+      Object.values(mapInfoWindowsRef.current).forEach((w: any) => w.close());
+      mapInfoWindowsRef.current = {};
       mapRef.current = null;
       mapRadiusCircleRef.current = null;
     };
-  }, [canShowMap, mapContainerNode, sessionConfig.origin_lat, sessionConfig.origin_lon]);
+  }, [canInitMap, mapContainerNode, sessionConfig.origin_lat, sessionConfig.origin_lon]);
 
   // ── Main map center + radius circle ──────────────────────────────────────
   useEffect(() => {
-    if (!canShowMap || !mapReady || !mapRef.current || !window.google?.maps) return;
+    if (!canInitMap || !mapReady || !mapRef.current || !window.google?.maps) return;
 
     const center = { lat: sessionConfig.origin_lat, lng: sessionConfig.origin_lon };
     mapRef.current.setCenter(center);
@@ -242,7 +301,7 @@ function App() {
       mapRadiusCircleRef.current.setCenter(center);
       mapRadiusCircleRef.current.setRadius(sessionConfig.spawn_radius_km * 1000);
     }
-  }, [canShowMap, mapReady, sessionConfig.origin_lat, sessionConfig.origin_lon, sessionConfig.spawn_radius_km]);
+  }, [canInitMap, mapReady, sessionConfig.origin_lat, sessionConfig.origin_lon, sessionConfig.spawn_radius_km]);
 
   // ── Main map markers ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -340,7 +399,7 @@ function App() {
 
   // ── Main map resize on nav switch ─────────────────────────────────────────
   useEffect(() => {
-    if (activeNav !== 'home' || !canShowMap || !mapReady || !mapRef.current || !window.google?.maps?.event) return;
+    if (activeNav !== 'home' || !canInitMap || !mapReady || !mapRef.current || !window.google?.maps?.event) return;
 
     const center = { lat: sessionConfig.origin_lat, lng: sessionConfig.origin_lon };
     window.setTimeout(() => {
@@ -348,7 +407,7 @@ function App() {
       window.google.maps.event.trigger(mapRef.current, 'resize');
       mapRef.current.setCenter(center);
     }, 0);
-  }, [activeNav, canShowMap, mapReady, sessionConfig.origin_lat, sessionConfig.origin_lon]);
+  }, [activeNav, canInitMap, mapReady, sessionConfig.origin_lat, sessionConfig.origin_lon]);
 
   // ── Nerd map init ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -511,7 +570,19 @@ function App() {
         </div>
       </header>
 
-      <main className={`app-main ${activeNav === 'nerds' ? 'app-main-top' : ''}`}>
+      <main className={`app-main ${activeNav !== 'home' ? 'app-main-top' : ''}`}>
+        {detectedEvents.length > 0 && (
+          <div className="scenario-banners">
+            {detectedEvents.map((evt) => (
+              <div className={`scenario-banner scenario-banner-${evt.event_type}`} key={`${evt.event_type}-${evt.zone}`}>
+                <strong>{evt.event_type.replace(/_/g, ' ').toUpperCase()}</strong>
+                <span className="scenario-zone">{evt.zone}</span>
+                <span className="scenario-desc">{evt.description}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {activeNav === 'nerds' ? (
           <section className="nerds-page" aria-live="polite">
             <div className="nerds-header">
@@ -540,30 +611,101 @@ function App() {
             )}
 
             {nerdScope === 'session' && sessionNerdStats && (
+              <>
               <div className="nerds-grid">
                 <article className="summary-card">
                   <p className="summary-label">My Session</p>
                   <p className="nerd-row">Session Sensors: <strong>{sessionNerdStats.session.sensors}</strong></p>
                   <p className="nerd-row">Session Readings: <strong>{sessionNerdStats.session.readings}</strong></p>
-                  <p className="nerd-row">{metricLabel('Readings / Min', 'Count of persisted readings generated by your session in the last 60 seconds.')}: <strong>{sessionNerdStats.session.readings_last_min}</strong></p>
-                  <p className="nerd-row">{metricLabel('Avg Value', 'Average of all numeric sensor values generated by this session so far.')}: <strong>{sessionNerdStats.session.avg_sensor_value.toFixed(2)}</strong></p>
+                  <p className="nerd-row">{metricLabel('Readings / Min', 'Total sensor readings received in the last 60 seconds across all sensors in this session.')}: <strong>{sessionNerdStats.session.readings_last_min}</strong></p>
+                  <p className="nerd-row">{metricLabel('Avg Value (all types)', 'Running average across all sensor readings in this session. Mixes sensor types so treat as a rough signal, not a precise metric.')}: <strong>{sessionNerdStats.session.avg_sensor_value.toFixed(2)}</strong></p>
                   <p className="nerd-row">Last Reading: <strong>{sessionNerdStats.session.last_reading_at ? new Date(sessionNerdStats.session.last_reading_at).toLocaleTimeString() : 'N/A'}</strong></p>
                 </article>
 
                 <article className="summary-card">
                   <p className="summary-label">Session Realtime</p>
-                  <p className="nerd-row">{metricLabel('Session Throughput', 'Estimated readings per second for your own session only (last minute rate).')}: <strong>{sessionNerdStats.realtime.estimated_throughput_msg_sec.toFixed(2)} msg/s</strong></p>
-                  <p className="nerd-row">{metricLabel('Global SSE Clients', 'Open SSE connections across all connected users; useful for stream fan-out visibility.')}: <strong>{sessionNerdStats.realtime.active_sse_clients}</strong></p>
+                  <p className="nerd-row">{metricLabel('Session Throughput', 'Actual sensor readings per second for this session (readings in last minute / 60).')}: <strong>{sessionNerdStats.realtime.estimated_throughput_msg_sec.toFixed(2)} msg/s</strong></p>
+                  <p className="nerd-row">{metricLabel('SSE Connected', 'Whether this browser session has an active Server-Sent Events stream connection.')}: <strong>{sessionNerdStats.realtime.sse_connected ? 'Yes' : 'No'}</strong></p>
                   <p className="nerd-row">Last Updated: <strong>{new Date(sessionNerdStats.timestamp).toLocaleTimeString()}</strong></p>
                 </article>
-
-                <article className="summary-card">
-                  <p className="summary-label">Runtime</p>
-                  <p className="nerd-row">Uptime: <strong>{Math.round(sessionNerdStats.system.uptime_sec / 60)} min</strong></p>
-                  <p className="nerd-row">{metricLabel('Global Go Routines', 'Process-wide goroutines in api-gateway from the shared Redis gauge. Same source as Global Platform.')}: <strong>{sessionNerdStats.system.global_goroutines ?? sessionNerdStats.system.goroutines}</strong></p>
-                  <p className="nerd-row">{metricLabel('Session Worker Goroutines', 'Session-owned SSE stream workers tracked by connect/disconnect lifecycle.')}: <strong>{sessionNerdStats.system.session_worker_goroutines ?? 0}</strong></p>
-                </article>
               </div>
+              {(() => {
+                const s = pipelineStats;
+                const dur = s ? Math.max(1.5, 8 - Math.min(s.throughput_msg_sec, 12) * 0.5) : 8;
+                const durKey = Math.round(dur * 2);
+                const edges = [
+                  { id: 'e1', d: 'M 145,140 C 190,140 210,140 255,140' },
+                  { id: 'e2a', d: 'M 345,140 C 390,140 400,90 445,90' },
+                  { id: 'e2b', d: 'M 345,140 C 390,140 400,190 445,190' },
+                  { id: 'e3', d: 'M 545,90 C 590,90 610,90 655,90' },
+                  { id: 'e4', d: 'M 545,190 C 590,190 610,190 655,190' },
+                ];
+                const nodes = [
+                  { x: 80, y: 140, w: 120, label: 'Sensors', stat: s ? `${s.sensors} active` : '---' },
+                  { x: 300, y: 140, w: 90, label: 'Kafka', stat: s ? `${s.kafka_messages} msgs` : '---' },
+                  { x: 495, y: 90, w: 90, label: 'Ingestion', stat: s ? `${s.throughput_msg_sec.toFixed(1)} msg/s` : '---' },
+                  { x: 720, y: 90, w: 110, label: 'PostgreSQL', stat: s ? `${Math.max(0, s.database_records)} rows` : '---' },
+                  { x: 495, y: 190, w: 110, label: 'API Gateway', stat: s ? `${s.kafka_topics ?? 3} topics` : '---' },
+                  { x: 720, y: 190, w: 120, label: 'SSE / Clients', stat: s ? `${s.sse_clients} connected` : '---' },
+                ];
+                return (
+                  <article className="summary-card pipeline-card">
+                    <div className="pipeline-card-header">
+                      <p className="summary-label">Data Pipeline</p>
+                      {s && <span className="pipeline-throughput">{s.throughput_msg_sec.toFixed(1)} msg/s</span>}
+                      {pipelineLoading && !s && <span className="pipeline-throughput">Loading...</span>}
+                    </div>
+                    <div className="pipeline-svg-wrapper">
+                      <svg className="pipeline-svg" viewBox="0 0 900 280" preserveAspectRatio="xMidYMid meet">
+                        <defs>
+                          <filter id="pipeline-glow">
+                            <feGaussianBlur stdDeviation="2.5" result="blur" />
+                            <feMerge>
+                              <feMergeNode in="blur" />
+                              <feMergeNode in="SourceGraphic" />
+                            </feMerge>
+                          </filter>
+                        </defs>
+                        {edges.map((e) => (
+                          <path key={e.id} d={e.d} className="pipeline-edge" />
+                        ))}
+                        {edges.map((e) =>
+                          [0, 0.33, 0.66].map((offset) => (
+                            <circle
+                              key={`${e.id}-p-${offset}-${durKey}`}
+                              r="4"
+                              className="pipeline-particle"
+                            >
+                              <animateMotion
+                                dur={`${dur}s`}
+                                repeatCount="indefinite"
+                                path={e.d}
+                                begin={`${-offset * dur}s`}
+                                calcMode="linear"
+                              />
+                            </circle>
+                          ))
+                        )}
+                        {nodes.map((n) => (
+                          <g key={n.label}>
+                            <rect
+                              x={n.x - n.w / 2}
+                              y={n.y - 28}
+                              width={n.w}
+                              height={56}
+                              rx={10}
+                              className="pipeline-node-shape"
+                            />
+                            <text x={n.x} y={n.y - 6} className="pipeline-node-label">{n.label}</text>
+                            <text x={n.x} y={n.y + 14} className="pipeline-node-stat">{n.stat}</text>
+                          </g>
+                        ))}
+                      </svg>
+                    </div>
+                  </article>
+                );
+              })()}
+              </>
             )}
             {nerdScope === 'session' && !sessionNerdStats && !sessionNerdStatsLoading && (
               <article className="summary-card">
@@ -575,6 +717,17 @@ function App() {
 
             {nerdScope === 'global' && nerdStats && (
               <>
+                <div className="nerds-refresh-row">
+                  <button
+                    className="scope-btn refresh-btn"
+                    type="button"
+                    onClick={() => { refreshNerds(); refreshPipeline(); }}
+                    title="Refresh all stats now"
+                  >
+                    Refresh
+                  </button>
+                  <span className="polling-dot-note"><span className="polling-dot" /> Auto-updates every 5s</span>
+                </div>
                 <div className="nerds-grid">
                   <article className="summary-card">
                     <p className="summary-label">Platform Runtime</p>
@@ -582,6 +735,7 @@ function App() {
                     <p className="nerd-row">{metricLabel('Go Routines', 'Number of live goroutines currently scheduled by the Go runtime.')}: <strong>{nerdStats.system.goroutines}</strong></p>
                     <p className="nerd-row">{metricLabel('Heap Alloc', 'Heap memory currently allocated and in active use by the process.')}: <strong>{nerdStats.system.heap_alloc_mb.toFixed(2)} MB</strong></p>
                     <p className="nerd-row">{metricLabel('Heap Sys', 'Heap memory obtained from the OS by the Go runtime, including unused reserved heap.')}: <strong>{nerdStats.system.heap_sys_mb.toFixed(2)} MB</strong></p>
+                    <p className="nerd-row">{metricLabel('GC Cycles', 'Total completed Go garbage collection cycles since process start.')}: <strong>{nerdStats.system.gc_cycles_total}</strong></p>
                   </article>
 
                   <article className="summary-card">
@@ -594,9 +748,10 @@ function App() {
 
                   <article className="summary-card">
                     <p className="summary-label">Database</p>
-                    <p className="nerd-row">Sensors: <strong>{nerdStats.database.sensors}</strong></p>
+                    <p className="nerd-row">{metricLabel('Active Sensors', 'Sensors currently registered and generating data.')}: <strong>{nerdStats.database.sensors}</strong></p>
+                    <p className="nerd-row">{metricLabel('Total Sensors Created', 'Distinct sensors that have ever produced at least one reading.')}: <strong>{nerdStats.database.total_sensors_created}</strong></p>
                     <p className="nerd-row">Readings: <strong>{nerdStats.database.readings}</strong></p>
-                    <p className="nerd-row">{metricLabel('Avg Readings/Sensor', 'Global retention density: total readings divided by total sensors.')}: <strong>{(nerdStats.platform?.avg_readings_per_sensor ?? 0).toFixed(2)}</strong></p>
+                    <p className="nerd-row">{metricLabel('Avg Readings/Sensor', 'Global retention density: total readings divided by active sensors.')}: <strong>{(nerdStats.platform?.avg_readings_per_sensor ?? 0).toFixed(2)}</strong></p>
                   </article>
 
                   <article className="summary-card">
@@ -617,8 +772,7 @@ function App() {
 
                   <article className="summary-card">
                     <p className="summary-label">Performance</p>
-                    <p className="nerd-row">{metricLabel('Est Throughput', 'Approximate operations/second derived from Kafka message delta plus Redis command delta over time.')}: <strong>{nerdStats.performance.estimated_throughput_msg_sec.toFixed(2)} ops/s</strong></p>
-                    <p className="nerd-row">{metricLabel('GC Cycles', 'Total completed Go garbage collection cycles since process start.')}: <strong>{nerdStats.system.gc_cycles_total}</strong></p>
+                    <p className="nerd-row">{metricLabel('Est Throughput', 'Approximate messages/second derived from Kafka message delta over time.')}: <strong>{nerdStats.performance.estimated_throughput_msg_sec.toFixed(2)} msg/s</strong></p>
                     <p className="nerd-row">Last Updated: <strong>{new Date(nerdStats.timestamp).toLocaleTimeString()}</strong></p>
                   </article>
                 </div>
@@ -855,6 +1009,21 @@ function App() {
                   })}
                 </div>
               </article>
+
+              {anomalies.length > 0 && (
+                <article className="summary-card anomaly-feed-panel">
+                  <p className="summary-label">Anomaly Feed</p>
+                  <ul className="anomaly-feed-list">
+                    {anomalies.map((a, i) => (
+                      <li className="anomaly-feed-item" key={`${a.sensor_id}-${a.timestamp}-${i}`}>
+                        <span className="anomaly-type">{a.sensor_type}</span>
+                        <span className="anomaly-value">{Number(a.value).toFixed(1)} (z={Number(a.z_score).toFixed(1)})</span>
+                        <span className="anomaly-time">{new Date(a.timestamp).toLocaleTimeString()}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              )}
             </aside>
           </section>
         )}

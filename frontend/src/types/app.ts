@@ -51,11 +51,6 @@ export interface SessionConfig {
   spawn_radius_km: number;
 }
 
-export interface SensorActionState {
-  type: MetricKey;
-  action: 'add' | 'remove';
-}
-
 export interface NerdStatsData {
   system: {
     uptime_sec: number;
@@ -66,6 +61,7 @@ export interface NerdStatsData {
   };
   database: {
     sensors: number;
+    total_sensors_created: number;
     readings: number;
   };
   redis: {
@@ -108,13 +104,7 @@ export interface SessionNerdStatsData {
   };
   realtime: {
     estimated_throughput_msg_sec: number;
-    active_sse_clients: number;
-  };
-  system: {
-    uptime_sec: number;
-    goroutines: number;
-    global_goroutines?: number;
-    session_worker_goroutines?: number;
+    sse_connected: boolean;
   };
   timestamp: string;
 }
@@ -131,4 +121,36 @@ export interface SensorFootprintData {
   total: number;
   points: SensorFootprintPoint[];
   counts: Record<string, number>;
+}
+
+export interface AnomalyEvent {
+  id?: number;
+  sensor_id: string;
+  sensor_type: string;
+  value: number;
+  expected_mean: number;
+  expected_stddev: number;
+  z_score: number;
+  timestamp: string;
+}
+
+export interface DetectedEvent {
+  id?: number;
+  event_type: string;
+  zone: string;
+  description: string;
+  sensor_ids: string[];
+  timestamp: string;
+  expires_at: string;
+}
+
+export interface PipelineFlowStats {
+  sensors: number;
+  kafka_topics: number;
+  kafka_messages: number;
+  redis_keys: number;
+  database_records: number;
+  sse_clients: number;
+  throughput_msg_sec: number;
+  timestamp: string;
 }

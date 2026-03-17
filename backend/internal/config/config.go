@@ -11,13 +11,13 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Kafka     KafkaConfig
-	Redis     RedisConfig
-	Postgres  PostgresConfig
-	API       APIConfig
-	Simulator SimulatorConfig
-	Data      DataConfig
-	App       AppConfig
+	Kafka      KafkaConfig
+	Redis      RedisConfig
+	Postgres   PostgresConfig
+	API        APIConfig
+	Simulator  SimulatorConfig
+	App        AppConfig
+	Resilience ResilienceConfig
 }
 
 // KafkaConfig holds Kafka-related configuration
@@ -25,9 +25,20 @@ type KafkaConfig struct {
 	Brokers                []string
 	InternalBrokers        []string
 	TopicSensorReadings    string
-	TopicAdminCommands     string
+	TopicDLQ               string
+	TopicAnomalies         string
+	TopicEvents            string
+	NumPartitions          int
 	ConsumerGroupIngestion string
-	ConsumerGroupAnalytics string
+	ConsumerGroupGateway   string
+}
+
+// ResilienceConfig holds circuit breaker and retry settings
+type ResilienceConfig struct {
+	CircuitBreakerThreshold int
+	CircuitBreakerTimeout   int // seconds
+	MaxRetries              int
+	RetryInitialBackoffMS   int
 }
 
 // RedisConfig holds Redis-related configuration
@@ -66,11 +77,6 @@ type SimulatorConfig struct {
 	StartEmpty            bool
 }
 
-// DataConfig holds data retention settings
-type DataConfig struct {
-	RetentionDays int
-}
-
 // AppConfig holds general application settings
 type AppConfig struct {
 	LogLevel    string
@@ -88,9 +94,12 @@ func Load() (*Config, error) {
 			Brokers:                []string{getEnv("KAFKA_BROKERS", "localhost:9092")},
 			InternalBrokers:        []string{getEnv("KAFKA_INTERNAL_BROKERS", "kafka:9093")},
 			TopicSensorReadings:    getEnvWithFallback("KAFKA_TOPIC_SENSOR_READINGS", "sensor-readings", "KAFKA_TOPIC_READINGS"),
-			TopicAdminCommands:     getEnv("KAFKA_TOPIC_ADMIN_COMMANDS", "admin-commands"),
+			TopicDLQ:               getEnv("KAFKA_TOPIC_DLQ", "sensor-readings-dlq"),
+			TopicAnomalies:         getEnv("KAFKA_TOPIC_ANOMALIES", "sensor-anomalies"),
+			TopicEvents:            getEnv("KAFKA_TOPIC_EVENTS", "sensor-events"),
+			NumPartitions:          getEnvAsInt("KAFKA_NUM_PARTITIONS", 6),
 			ConsumerGroupIngestion: getEnv("KAFKA_CONSUMER_GROUP_INGESTION", "data-ingestion-group"),
-			ConsumerGroupAnalytics: getEnv("KAFKA_CONSUMER_GROUP_ANALYTICS", "analytics-group"),
+			ConsumerGroupGateway:   getEnvWithFallback("KAFKA_CONSUMER_GROUP_GATEWAY", "gateway-group", "KAFKA_CONSUMER_GROUP_ANALYTICS"),
 		},
 		Redis: RedisConfig{
 			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
@@ -120,12 +129,15 @@ func Load() (*Config, error) {
 			EnableWeatherPatterns: getEnvAsBool("ENABLE_WEATHER_PATTERNS", true),
 			StartEmpty:            getEnvAsBool("SIMULATOR_START_EMPTY", false),
 		},
-		Data: DataConfig{
-			RetentionDays: getEnvAsInt("RETENTION_DAYS", 7),
-		},
 		App: AppConfig{
 			LogLevel:    getEnvWithFallback("LOG_LEVEL", "info", "APP_LOG_LEVEL"),
 			Environment: getEnvWithFallback("ENVIRONMENT", "development", "APP_ENVIRONMENT"),
+		},
+		Resilience: ResilienceConfig{
+			CircuitBreakerThreshold: getEnvAsInt("CB_THRESHOLD", 5),
+			CircuitBreakerTimeout:   getEnvAsInt("CB_TIMEOUT_SECONDS", 30),
+			MaxRetries:              getEnvAsInt("MAX_RETRIES", 3),
+			RetryInitialBackoffMS:   getEnvAsInt("RETRY_INITIAL_BACKOFF_MS", 100),
 		},
 	}
 
@@ -178,7 +190,7 @@ func (c *Config) Validate(service string) error {
 		return fmt.Errorf("invalid REDIS_DB: %d", c.Redis.DB)
 	}
 
-	for _, topic := range []string{c.Kafka.TopicSensorReadings, c.Kafka.TopicAdminCommands} {
+	for _, topic := range []string{c.Kafka.TopicSensorReadings} {
 		if topic == "" {
 			continue
 		}

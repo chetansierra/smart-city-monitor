@@ -209,6 +209,44 @@ func (db *DB) GetSensorsOlderThan(ctx context.Context, age time.Duration) ([]mod
 	return sensors, rows.Err()
 }
 
+// GetSensorsBySession returns all sensors belonging to a session.
+func (db *DB) GetSensorsBySession(ctx context.Context, sessionID uuid.UUID) ([]models.Sensor, error) {
+	query := `
+		SELECT id, session_id, name, type, latitude, longitude, status, config, created_at, updated_at
+		FROM sensors
+		WHERE session_id = $1
+	`
+	rows, err := db.QueryContext(ctx, query, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sensors by session: %w", err)
+	}
+	defer rows.Close()
+
+	var sensors []models.Sensor
+	for rows.Next() {
+		var s models.Sensor
+		if err := rows.Scan(
+			&s.ID, &s.SessionID, &s.Name, &s.Type, &s.Latitude, &s.Longitude,
+			&s.Status, &s.Config, &s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan session sensor: %w", err)
+		}
+		s.Location = models.Location{Latitude: s.Latitude, Longitude: s.Longitude}
+		sensors = append(sensors, s)
+	}
+	return sensors, rows.Err()
+}
+
+// DeleteSensorsBySession deletes all sensors belonging to a session and returns the count.
+func (db *DB) DeleteSensorsBySession(ctx context.Context, sessionID uuid.UUID) (int64, error) {
+	query := `DELETE FROM sensors WHERE session_id = $1`
+	result, err := db.ExecContext(ctx, query, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete session sensors: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // DeleteSensorByID deletes a sensor by ID regardless of session ownership.
 func (db *DB) DeleteSensorByID(ctx context.Context, id uuid.UUID) (bool, error) {
 	query := `DELETE FROM sensors WHERE id = $1`
@@ -223,181 +261,175 @@ func (db *DB) DeleteSensorByID(ctx context.Context, id uuid.UUID) (bool, error) 
 	return rowsAffected > 0, nil
 }
 
-// InsertSensorReading inserts a new sensor reading
-func (db *DB) InsertSensorReading(ctx context.Context, reading *models.SensorReading) error {
+// InsertAnomalyEvent inserts an anomaly event into the database.
+func (db *DB) InsertAnomalyEvent(ctx context.Context, event *models.AnomalyEvent) error {
 	query := `
-		INSERT INTO sensor_readings (sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO anomaly_events (sensor_id, sensor_type, value, expected_mean, expected_stddev, z_score, timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
-
-	_, err := db.ExecContext(
-		ctx, query,
-		reading.SensorID, reading.SessionID, reading.SensorType, reading.Value, reading.Unit,
-		reading.Latitude, reading.Longitude, reading.Timestamp,
+	_, err := db.ExecContext(ctx, query,
+		event.SensorID, event.SensorType, event.Value,
+		event.ExpectedMean, event.ExpectedStdDev, event.ZScore, event.Timestamp,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to insert sensor reading: %w", err)
+		return fmt.Errorf("failed to insert anomaly event: %w", err)
 	}
-
 	return nil
 }
 
-// InsertSensorReadingsBatch inserts multiple sensor readings in a single transaction
-func (db *DB) InsertSensorReadingsBatch(ctx context.Context, readings []models.SensorReading) error {
-	if len(readings) == 0 {
-		return nil
+// InsertDetectedEvent inserts a detected pattern event into the database.
+func (db *DB) InsertDetectedEvent(ctx context.Context, event *models.DetectedEvent) error {
+	sensorIDStrs := make([]string, len(event.SensorIDs))
+	for i, id := range event.SensorIDs {
+		sensorIDStrs[i] = id.String()
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO sensor_readings (sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, reading := range readings {
-		_, err := stmt.ExecContext(
-			ctx,
-			reading.SensorID, reading.SessionID, reading.SensorType, reading.Value, reading.Unit,
-			reading.Latitude, reading.Longitude, reading.Timestamp,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert reading: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// GetRecentReadings retrieves recent readings for a sensor
-func (db *DB) GetRecentReadings(ctx context.Context, sensorID uuid.UUID, limit int) ([]models.SensorReading, error) {
 	query := `
-		SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
-		FROM sensor_readings
-		WHERE sensor_id = $1
+		INSERT INTO detected_events (event_type, zone, description, sensor_ids, timestamp, expires_at)
+		VALUES ($1, $2, $3, $4::uuid[], $5, $6)
+	`
+	_, err := db.ExecContext(ctx, query,
+		event.EventType, event.Zone, event.Description,
+		"{"+strings.Join(sensorIDStrs, ",")+"}",
+		event.Timestamp, event.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert detected event: %w", err)
+	}
+	return nil
+}
+
+// GetRecentAnomalies returns recent anomaly events.
+func (db *DB) GetRecentAnomalies(ctx context.Context, limit int, since time.Time) ([]models.AnomalyEvent, error) {
+	query := `
+		SELECT id, sensor_id, sensor_type, value, expected_mean, expected_stddev, z_score, timestamp, created_at
+		FROM anomaly_events
+		WHERE timestamp >= $1
 		ORDER BY timestamp DESC
 		LIMIT $2
 	`
-
-	rows, err := db.QueryContext(ctx, query, sensorID, limit)
+	rows, err := db.QueryContext(ctx, query, since, limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query recent readings: %w", err)
+		return nil, fmt.Errorf("failed to query anomaly events: %w", err)
 	}
 	defer rows.Close()
 
-	var readings []models.SensorReading
+	var events []models.AnomalyEvent
 	for rows.Next() {
-		var r models.SensorReading
-		err := rows.Scan(
-			&r.ID, &r.SensorID, &r.SessionID, &r.SensorType, &r.Value, &r.Unit,
-			&r.Latitude, &r.Longitude, &r.Timestamp,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan reading: %w", err)
+		var e models.AnomalyEvent
+		if err := rows.Scan(&e.ID, &e.SensorID, &e.SensorType, &e.Value,
+			&e.ExpectedMean, &e.ExpectedStdDev, &e.ZScore, &e.Timestamp, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan anomaly event: %w", err)
 		}
-
-		r.Location = models.Location{
-			Latitude:  r.Latitude,
-			Longitude: r.Longitude,
-		}
-
-		readings = append(readings, r)
+		events = append(events, e)
 	}
-
-	return readings, rows.Err()
+	return events, rows.Err()
 }
 
-// GetReadingsInTimeRange retrieves readings within a time range
-func (db *DB) GetReadingsInTimeRange(ctx context.Context, sensorID uuid.UUID, from, to time.Time) ([]models.SensorReading, error) {
+// GetRecentDetectedEvents returns recent detected events.
+func (db *DB) GetRecentDetectedEvents(ctx context.Context, limit int, since time.Time) ([]models.DetectedEvent, error) {
 	query := `
-		SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
-		FROM sensor_readings
-		WHERE sensor_id = $1 AND timestamp >= $2 AND timestamp <= $3
+		SELECT id, event_type, zone, description, sensor_ids, timestamp, expires_at, created_at
+		FROM detected_events
+		WHERE timestamp >= $1
 		ORDER BY timestamp DESC
+		LIMIT $2
 	`
+	rows, err := db.QueryContext(ctx, query, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query detected events: %w", err)
+	}
+	defer rows.Close()
 
+	var events []models.DetectedEvent
+	for rows.Next() {
+		var e models.DetectedEvent
+		var sensorIDsStr string
+		if err := rows.Scan(&e.ID, &e.EventType, &e.Zone, &e.Description,
+			&sensorIDsStr, &e.Timestamp, &e.ExpiresAt, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan detected event: %w", err)
+		}
+		// Parse PostgreSQL UUID array format: {uuid1,uuid2,...}
+		if len(sensorIDsStr) > 2 {
+			raw := sensorIDsStr[1 : len(sensorIDsStr)-1] // strip { }
+			for _, idStr := range strings.Split(raw, ",") {
+				if id, parseErr := uuid.Parse(strings.TrimSpace(idStr)); parseErr == nil {
+					e.SensorIDs = append(e.SensorIDs, id)
+				}
+			}
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetHourlyAggregates returns pre-computed hourly aggregates for a sensor.
+func (db *DB) GetHourlyAggregates(ctx context.Context, sensorID uuid.UUID, from, to time.Time) ([]models.SensorAggregate, error) {
+	query := `
+		SELECT id, sensor_id, sensor_type, aggregation_type, avg_value, min_value, max_value, period_start, period_end
+		FROM sensor_aggregates
+		WHERE sensor_id = $1 AND aggregation_type = 'hourly' AND period_start >= $2 AND period_start <= $3
+		ORDER BY period_start DESC
+	`
 	rows, err := db.QueryContext(ctx, query, sensorID, from, to)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query readings in time range: %w", err)
+		return nil, fmt.Errorf("failed to query hourly aggregates: %w", err)
 	}
 	defer rows.Close()
 
-	var readings []models.SensorReading
+	var aggregates []models.SensorAggregate
 	for rows.Next() {
-		var r models.SensorReading
-		err := rows.Scan(
-			&r.ID, &r.SensorID, &r.SessionID, &r.SensorType, &r.Value, &r.Unit,
-			&r.Latitude, &r.Longitude, &r.Timestamp,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan reading: %w", err)
+		var a models.SensorAggregate
+		if err := rows.Scan(&a.ID, &a.SensorID, &a.SensorType,
+			&a.AggregationType, &a.AvgValue, &a.MinValue, &a.MaxValue,
+			&a.PeriodStart, &a.PeriodEnd); err != nil {
+			return nil, fmt.Errorf("failed to scan aggregate: %w", err)
 		}
-
-		r.Location = models.Location{
-			Latitude:  r.Latitude,
-			Longitude: r.Longitude,
-		}
-
-		readings = append(readings, r)
+		aggregates = append(aggregates, a)
 	}
-
-	return readings, rows.Err()
+	return aggregates, rows.Err()
 }
 
-// GetReadingsInTimeRangeForAllSensors retrieves readings across all sensors within a time range.
-func (db *DB) GetReadingsInTimeRangeForAllSensors(ctx context.Context, from, to time.Time, sensorType string) ([]models.SensorReading, error) {
+// GetHourlyAggregatesForAll returns hourly aggregates for all sensors in a time range, optionally filtered by type.
+func (db *DB) GetHourlyAggregatesForAll(ctx context.Context, from, to time.Time, sensorType string) ([]models.SensorAggregate, error) {
 	var query string
 	var args []interface{}
 
 	if sensorType != "" {
 		query = `
-			SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
-			FROM sensor_readings
-			WHERE timestamp >= $1 AND timestamp <= $2 AND sensor_type = $3
-			ORDER BY timestamp DESC
+			SELECT id, sensor_id, sensor_type, aggregation_type, avg_value, min_value, max_value, period_start, period_end
+			FROM sensor_aggregates
+			WHERE aggregation_type = 'hourly' AND period_start >= $1 AND period_start <= $2 AND sensor_type = $3
+			ORDER BY period_start DESC
 		`
 		args = []interface{}{from, to, sensorType}
 	} else {
 		query = `
-			SELECT id, sensor_id, session_id, sensor_type, value, unit, latitude, longitude, timestamp
-			FROM sensor_readings
-			WHERE timestamp >= $1 AND timestamp <= $2
-			ORDER BY timestamp DESC
+			SELECT id, sensor_id, sensor_type, aggregation_type, avg_value, min_value, max_value, period_start, period_end
+			FROM sensor_aggregates
+			WHERE aggregation_type = 'hourly' AND period_start >= $1 AND period_start <= $2
+			ORDER BY period_start DESC
 		`
 		args = []interface{}{from, to}
 	}
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query readings for all sensors: %w", err)
+		return nil, fmt.Errorf("failed to query hourly aggregates: %w", err)
 	}
 	defer rows.Close()
 
-	var readings []models.SensorReading
+	var aggregates []models.SensorAggregate
 	for rows.Next() {
-		var r models.SensorReading
-		if err := rows.Scan(
-			&r.ID, &r.SensorID, &r.SessionID, &r.SensorType, &r.Value, &r.Unit,
-			&r.Latitude, &r.Longitude, &r.Timestamp,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan reading: %w", err)
+		var a models.SensorAggregate
+		if err := rows.Scan(&a.ID, &a.SensorID, &a.SensorType,
+			&a.AggregationType, &a.AvgValue, &a.MinValue, &a.MaxValue,
+			&a.PeriodStart, &a.PeriodEnd); err != nil {
+			return nil, fmt.Errorf("failed to scan aggregate: %w", err)
 		}
-		r.Location = models.Location{Latitude: r.Latitude, Longitude: r.Longitude}
-		readings = append(readings, r)
+		aggregates = append(aggregates, a)
 	}
-	return readings, rows.Err()
+	return aggregates, rows.Err()
 }
 
 // InsertSensor inserts a new sensor into the database

@@ -18,6 +18,7 @@ import (
 	"github.com/chetansierra/smart-city-monitor/internal/models"
 	"github.com/chetansierra/smart-city-monitor/internal/postgres"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
+	"github.com/chetansierra/smart-city-monitor/internal/resilience"
 	"github.com/chetansierra/smart-city-monitor/internal/scenario"
 	"github.com/chetansierra/smart-city-monitor/internal/simulation"
 	"github.com/google/uuid"
@@ -70,9 +71,25 @@ func main() {
 	}
 	log.Info().Int("count", len(sensors)).Msg("Loaded sensors from database")
 
-	// Create Kafka producer
+	// Ensure Kafka topics exist
+	topicSpecs := []kafka.TopicSpec{
+		{Name: cfg.Kafka.TopicSensorReadings, NumPartitions: int32(cfg.Kafka.NumPartitions), ReplicationFactor: 1},
+	}
+	if err := kafka.EnsureTopics(cfg.Kafka.Brokers, topicSpecs); err != nil {
+		log.Warn().Err(err).Msg("Failed to ensure Kafka topics (will rely on auto-create)")
+	}
+
+	// Create circuit breaker for Kafka producer
+	producerCB := resilience.NewCircuitBreaker(resilience.CircuitBreakerConfig{
+		FailureThreshold: cfg.Resilience.CircuitBreakerThreshold,
+		SuccessThreshold: 2,
+		Timeout:          time.Duration(cfg.Resilience.CircuitBreakerTimeout) * time.Second,
+	})
+
+	// Create Kafka producer with circuit breaker
 	producer, err := kafka.NewProducer(kafka.ProducerConfig{
-		Brokers: cfg.Kafka.Brokers,
+		Brokers:        cfg.Kafka.Brokers,
+		CircuitBreaker: producerCB,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create Kafka producer")
@@ -128,6 +145,14 @@ type Simulator struct {
 	sensorStates map[uuid.UUID]*sensorState
 	controls     runtimeControls
 	mu           sync.RWMutex
+	msgBuffer    []bufferedMessage
+	msgBufferMu  sync.Mutex
+}
+
+type bufferedMessage struct {
+	Topic string
+	Key   string
+	Msg   models.KafkaMessage
 }
 
 // NewSimulator creates a new simulator
@@ -205,15 +230,23 @@ func (s *Simulator) Start() {
 					Timestamp: reading.Timestamp.Format(time.RFC3339Nano),
 				}
 
-				// Send to Kafka
+				// Send to Kafka (with buffering on circuit breaker open)
 				if err := s.producer.SendMessage(s.config.Kafka.TopicSensorReadings, sensor.ID.String(), kafkaMsg); err != nil {
-					log.Error().
-						Err(err).
-						Str("sensor_id", sensor.ID.String()).
-						Str("sensor_type", string(sensor.Type)).
-						Msg("Failed to send message to Kafka")
+					if err == resilience.ErrCircuitOpen {
+						s.bufferMessage(s.config.Kafka.TopicSensorReadings, sensor.ID.String(), kafkaMsg)
+					} else {
+						log.Error().
+							Err(err).
+							Str("sensor_id", sensor.ID.String()).
+							Str("sensor_type", string(sensor.Type)).
+							Msg("Failed to send message to Kafka")
+					}
+				} else {
+					messageCount++
 				}
-				messageCount++
+
+			// Try to drain buffered messages
+			s.drainBuffer()
 			}
 
 			if messageCount%100 == 0 && messageCount > 0 {
@@ -418,6 +451,47 @@ func (s *Simulator) handleCommand(cmd redis.SimulationCommand) {
 // Stop stops the simulation
 func (s *Simulator) Stop() {
 	close(s.stopChan)
+}
+
+func (s *Simulator) bufferMessage(topic, key string, msg models.KafkaMessage) {
+	s.msgBufferMu.Lock()
+	defer s.msgBufferMu.Unlock()
+	if len(s.msgBuffer) < 1000 {
+		s.msgBuffer = append(s.msgBuffer, bufferedMessage{Topic: topic, Key: key, Msg: msg})
+	}
+	if len(s.msgBuffer)%100 == 0 {
+		log.Warn().Int("buffered", len(s.msgBuffer)).Msg("Circuit breaker open: buffering messages")
+	}
+}
+
+func (s *Simulator) drainBuffer() {
+	s.msgBufferMu.Lock()
+	if len(s.msgBuffer) == 0 {
+		s.msgBufferMu.Unlock()
+		return
+	}
+	toSend := make([]bufferedMessage, len(s.msgBuffer))
+	copy(toSend, s.msgBuffer)
+	s.msgBuffer = s.msgBuffer[:0]
+	s.msgBufferMu.Unlock()
+
+	sent := 0
+	for _, bm := range toSend {
+		if err := s.producer.SendMessage(bm.Topic, bm.Key, bm.Msg); err != nil {
+			// Re-buffer remaining
+			s.msgBufferMu.Lock()
+			s.msgBuffer = append(toSend[sent:], s.msgBuffer...)
+			if len(s.msgBuffer) > 1000 {
+				s.msgBuffer = s.msgBuffer[:1000]
+			}
+			s.msgBufferMu.Unlock()
+			return
+		}
+		sent++
+	}
+	if sent > 0 {
+		log.Info().Int("drained", sent).Msg("Drained buffered messages after circuit recovery")
+	}
 }
 
 // generateReading generates a realistic sensor reading

@@ -37,8 +37,10 @@ func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsH
 
 	// Session routes
 	session := v1.Group("/session")
-	session.Get("/config", sensorsHandler.GetSessionConfig)    // GET /api/v1/session/config
-	session.Put("/config", sensorsHandler.UpdateSessionConfig) // PUT /api/v1/session/config
+	session.Get("/config", sensorsHandler.GetSessionConfig)       // GET /api/v1/session/config
+	session.Put("/config", sensorsHandler.UpdateSessionConfig)   // PUT /api/v1/session/config
+	session.Delete("/sensors", sensorsHandler.TeardownSession)   // DELETE /api/v1/session/sensors
+	session.Post("/teardown", sensorsHandler.TeardownSession)    // POST /api/v1/session/teardown (for sendBeacon)
 
 	// Readings routes
 	readings := v1.Group("/readings")
@@ -55,6 +57,8 @@ func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsH
 	analytics.Get("/hourly", analyticsHandler.GetHourlyAggregations)            // GET /api/v1/analytics/hourly
 	analytics.Get("/compare", analyticsHandler.GetComparisonData)               // GET /api/v1/analytics/compare
 	analytics.Get("/zones", analyticsHandler.GetZoneAnalytics)                  // GET /api/v1/analytics/zones
+	analytics.Get("/anomalies", analyticsHandler.GetAnomalies)                  // GET /api/v1/analytics/anomalies
+	analytics.Get("/events", analyticsHandler.GetDetectedEvents)               // GET /api/v1/analytics/events
 
 	// Metrics routes
 	metrics := v1.Group("/metrics")
@@ -73,6 +77,7 @@ func setupRoutes(app *fiber.App, healthHandler *handlers.HealthHandler, sensorsH
 	pipeline.Get("/kafka/topics/:topic/messages", pipelineHandler.GetKafkaMessages) // GET /api/v1/pipeline/kafka/topics/:topic/messages
 	pipeline.Get("/redis/keys", pipelineHandler.GetRedisKeys)                       // GET /api/v1/pipeline/redis/keys
 	pipeline.Get("/redis/keys/:key", pipelineHandler.GetRedisKeyDetail)             // GET /api/v1/pipeline/redis/keys/:key
+	pipeline.Get("/dlq", pipelineHandler.GetDLQMessages)                             // GET /api/v1/pipeline/dlq
 	pipeline.Get("/stream/connections", sseHandler.GetStats)                        // GET /api/v1/pipeline/stream/connections
 
 	// Admin routes

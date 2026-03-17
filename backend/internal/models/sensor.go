@@ -88,7 +88,6 @@ type KafkaMessage struct {
 type SensorAggregate struct {
 	ID              int64      `json:"id" db:"id"`
 	SensorID        uuid.UUID  `json:"sensor_id" db:"sensor_id"`
-	SessionID       *uuid.UUID `json:"session_id,omitempty" db:"session_id"`
 	SensorType      SensorType `json:"sensor_type" db:"sensor_type"`
 	AggregationType string     `json:"aggregation_type" db:"aggregation_type"` // hourly, daily
 	AvgValue        float64    `json:"avg_value" db:"avg_value"`

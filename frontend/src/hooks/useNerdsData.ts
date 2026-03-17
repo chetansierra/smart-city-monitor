@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE_URL, GOOGLE_MAPS_API_KEY } from '../constants/app';
 import type { NerdStatsData, SensorFootprintData, SessionNerdStatsData, StreamMessage } from '../types/app';
 import { useSSEConnection } from './useSSEConnection';
@@ -18,6 +18,9 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
   const [globalFootprintLoading, setGlobalFootprintLoading] = useState(false);
 
   const isNerds = activeNav === 'nerds';
+
+  // Keep fetch functions in refs so refresh() always calls the latest versions
+  const fetchFnsRef = useRef<{ global: () => Promise<void>; session: () => Promise<void>; footprint: () => Promise<void> } | null>(null);
 
   // SSE connection for live stats_update events (shared singleton)
   useSSEConnection(sessionId, isNerds, (payload: StreamMessage) => {
@@ -90,12 +93,14 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
       }
     };
 
+    fetchFnsRef.current = { global: fetchGlobalNerdStats, session: fetchSessionNerdStats, footprint: fetchGlobalFootprint };
+
     setNerdStatsError('');
     void fetchGlobalNerdStats();
     void fetchSessionNerdStats();
     void fetchGlobalFootprint();
-    const globalTimer = window.setInterval(fetchGlobalNerdStats, 60000);
-    const sessionTimer = window.setInterval(fetchSessionNerdStats, 30000);
+    const globalTimer = window.setInterval(fetchGlobalNerdStats, 5000);
+    const sessionTimer = window.setInterval(fetchSessionNerdStats, 1000);
     const footprintTimer = window.setInterval(fetchGlobalFootprint, 120000);
 
     const refreshOnVisible = () => {
@@ -109,6 +114,7 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
 
     return () => {
       cancelled = true;
+      fetchFnsRef.current = null;
       window.clearInterval(globalTimer);
       window.clearInterval(sessionTimer);
       window.clearInterval(footprintTimer);
@@ -118,6 +124,14 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNerds, sessionId]);
 
+  const refresh = useCallback(() => {
+    const fns = fetchFnsRef.current;
+    if (!fns) return;
+    void fns.global();
+    void fns.session();
+    void fns.footprint();
+  }, []);
+
   return {
     nerdStats,
     sessionNerdStats,
@@ -126,5 +140,6 @@ export function useNerdsData({ sessionId, activeNav }: Params) {
     nerdStatsError,
     globalFootprint,
     globalFootprintLoading,
+    refresh,
   };
 }

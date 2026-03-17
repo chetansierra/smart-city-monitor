@@ -1,0 +1,126 @@
+# Production compose — runs on a single EC2 t2.micro/t3.micro (AWS free tier).
+#
+# What runs here:  Kafka (KRaft — no Zookeeper), Redis, and the three Go services.
+# What's external: PostgreSQL only → use Neon (free forever).
+#
+# Memory budget on t2.micro (1 GB):
+#   Kafka 256MB heap ~300MB | Redis ~50MB | 3 Go services ~90MB | OS ~150MB = ~590MB ✓
+#
+# Usage:
+#   cp .env.prod.example .env.prod   # fill in Neon credentials + ALLOWED_ORIGINS
+#   docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  # Kafka — KRaft mode (no Zookeeper needed)
+  # Uses Bitnami image which has first-class KRaft support.
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: kafka
+    restart: unless-stopped
+    environment:
+      # KRaft: this node is both broker and controller
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Listeners: PLAINTEXT for clients (Go services), CONTROLLER for KRaft quorum
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Single-node: replication factor 1 is correct
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # 256MB heap is plenty for 50 sensors — keeps t2.micro memory comfortable
+      KAFKA_HEAP_OPTS: "-Xmx256M -Xms128M"
+    volumes:
+      - kafka-data:/bitnami/kafka
+    networks:
+      - smart-city-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Redis — self-hosted (Upstash free tier is 10K cmds/day; this app does ~200/sec)
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy volatile-ttl
+    volumes:
+      - redis-data:/data
+    networks:
+      - smart-city-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway — REST API + SSE server
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api-gateway
+    container_name: api-gateway
+    restart: unless-stopped
+    env_file: .env.prod
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    networks:
+      - smart-city-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Data Ingestion — Kafka consumer → PostgreSQL + Redis
+  data-ingestion:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.data-ingestion
+    container_name: data-ingestion
+    restart: unless-stopped
+    env_file: .env.prod
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - smart-city-network
+
+  # Sensor Simulator — generates mock sensor readings
+  sensor-simulator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.sensor-simulator
+    container_name: sensor-simulator
+    restart: unless-stopped
+    env_file: .env.prod
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - smart-city-network
+
+networks:
+  smart-city-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  redis-data:

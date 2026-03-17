@@ -10,6 +10,7 @@ import (
 
 	"github.com/chetansierra/smart-city-monitor/cmd/api-gateway/handlers"
 	"github.com/chetansierra/smart-city-monitor/internal/config"
+	"github.com/chetansierra/smart-city-monitor/internal/kafka"
 	"github.com/chetansierra/smart-city-monitor/internal/logger"
 	"github.com/chetansierra/smart-city-monitor/internal/middleware"
 	"github.com/chetansierra/smart-city-monitor/internal/postgres"
@@ -75,6 +76,16 @@ func main() {
 	defer redisClient.Close()
 	log.Info().Msg("Connected to Redis")
 
+	// Ensure Kafka topics exist
+	topicSpecs := []kafka.TopicSpec{
+		{Name: cfg.Kafka.TopicSensorReadings, NumPartitions: int32(cfg.Kafka.NumPartitions), ReplicationFactor: 1},
+		{Name: cfg.Kafka.TopicAnomalies, NumPartitions: 3, ReplicationFactor: 1},
+		{Name: cfg.Kafka.TopicEvents, NumPartitions: 3, ReplicationFactor: 1},
+	}
+	if err := kafka.EnsureTopics(cfg.Kafka.Brokers, topicSpecs); err != nil {
+		log.Warn().Err(err).Msg("Failed to ensure Kafka topics (will rely on auto-create)")
+	}
+
 	// Create SSE broadcaster
 	broadcaster := sse.NewBroadcaster()
 	go broadcaster.Listen()
@@ -111,25 +122,30 @@ func main() {
 	app.Use(middleware.SanitizeInput())
 
 	// Create handlers
-	healthHandler := handlers.NewHealthHandler(db, redisClient)
+	healthHandler := handlers.NewHealthHandler(db, redisClient, cfg.Kafka.Brokers...)
 	sensorsHandler := handlers.NewSensorsHandler(db, redisClient)
 	readingsHandler := handlers.NewReadingsHandler(db, redisClient)
 	analyticsHandler := handlers.NewAnalyticsHandler(db, redisClient)
-	sseHandler := handlers.NewSSEHandler(broadcaster, redisClient)
+	kafkaTopics := []string{cfg.Kafka.TopicSensorReadings, cfg.Kafka.TopicAnomalies, cfg.Kafka.TopicEvents}
+	sseHandler := handlers.NewSSEHandler(broadcaster, redisClient, cfg.Kafka.Brokers, kafkaTopics, cfg.Kafka.ConsumerGroupGateway)
 	metricsHandler := handlers.NewMetricsHandler(db, redisClient, broadcaster, cfg.Kafka.Brokers)
 	adminHandler := handlers.NewAdminHandler(db, redisClient)
-	pipelineHandler := handlers.NewPipelineHandler(redisClient, cfg.Kafka.Brokers)
+	pipelineHandler := handlers.NewPipelineHandler(redisClient, cfg.Kafka.Brokers, metricsHandler, broadcaster)
 
-	// Start Redis Pub/Sub listener for real-time updates
-	go sseHandler.StartRedisPubSubListener(context.Background())
-	log.Info().Msg("Started Redis Pub/Sub listener for SSE updates")
+	// Create cancellable context for background goroutines
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	// Start Kafka consumer for real-time SSE updates (replaces Redis Pub/Sub)
+	go sseHandler.StartKafkaConsumer(bgCtx)
+	log.Info().Strs("topics", kafkaTopics).Msg("Started Kafka consumer for SSE updates")
 
 	// Start Session Inactivity Monitor
-	go sensorsHandler.StartInactivityMonitor(context.Background())
+	go sensorsHandler.StartInactivityMonitor(bgCtx)
 	log.Info().Msg("Started session inactivity monitor")
 
 	// Start nerd-stats aggregator for cached metrics + SSE updates
-	go metricsHandler.StartNerdStatsAggregator(context.Background())
+	go metricsHandler.StartNerdStatsAggregator(bgCtx)
 	log.Info().Msg("Started nerd stats aggregator")
 
 	// Setup routes
@@ -150,6 +166,9 @@ func main() {
 	<-quit
 
 	log.Info().Msg("Shutting down API Gateway...")
+
+	// Cancel background goroutines (Kafka consumer, inactivity monitor, nerd stats)
+	bgCancel()
 
 	// Give outstanding requests 10 seconds to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

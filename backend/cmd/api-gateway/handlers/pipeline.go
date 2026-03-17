@@ -7,22 +7,28 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"github.com/chetansierra/smart-city-monitor/internal/kafka"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
+	"github.com/chetansierra/smart-city-monitor/internal/sse"
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog/log"
 )
 
 // PipelineHandler handles data pipeline visualization endpoints
 type PipelineHandler struct {
-	redisClient  *redis.Client
-	kafkaBrokers []string
+	redisClient    *redis.Client
+	kafkaBrokers   []string
+	metricsHandler *MetricsHandler
+	broadcaster    *sse.Broadcaster
 }
 
 // NewPipelineHandler creates a new pipeline handler
-func NewPipelineHandler(redisClient *redis.Client, kafkaBrokers []string) *PipelineHandler {
+func NewPipelineHandler(redisClient *redis.Client, kafkaBrokers []string, metricsHandler *MetricsHandler, broadcaster *sse.Broadcaster) *PipelineHandler {
 	return &PipelineHandler{
-		redisClient:  redisClient,
-		kafkaBrokers: kafkaBrokers,
+		redisClient:    redisClient,
+		kafkaBrokers:   kafkaBrokers,
+		metricsHandler: metricsHandler,
+		broadcaster:    broadcaster,
 	}
 }
 
@@ -65,16 +71,6 @@ type RedisKeyInfo struct {
 	Size     int64       `json:"size"`
 	Value    interface{} `json:"value,omitempty"`
 	Encoding string      `json:"encoding,omitempty"`
-}
-
-// SSEConnection represents an SSE stream connection
-type SSEConnection struct {
-	ID           string    `json:"id"`
-	RemoteAddr   string    `json:"remote_addr"`
-	ConnectedAt  time.Time `json:"connected_at"`
-	Duration     string    `json:"duration"`
-	EventsSent   int64     `json:"events_sent"`
-	LastActivity time.Time `json:"last_activity"`
 }
 
 // DataFlowStats represents real-time data flow statistics
@@ -547,78 +543,62 @@ func (h *PipelineHandler) GetRedisKeyDetail(c *fiber.Ctx) error {
 	})
 }
 
-// GetSSEConnections handles GET /api/v1/pipeline/stream/connections
-func (h *PipelineHandler) GetSSEConnections(c *fiber.Ctx) error {
-	// For now, return mock data structure or integrate with broadcaster stats
-	connections := []SSEConnection{
-		{
-			ID:           "conn-1",
-			RemoteAddr:   "192.168.1.100:54321",
-			ConnectedAt:  time.Now().Add(-10 * time.Minute),
-			Duration:     "10m0s",
-			EventsSent:   1523,
-			LastActivity: time.Now(),
-		},
+// GetDLQMessages handles GET /api/v1/pipeline/dlq
+func (h *PipelineHandler) GetDLQMessages(c *fiber.Ctx) error {
+	limit := c.QueryInt("limit", 10)
+	if limit > 100 {
+		limit = 100
+	}
+
+	dlqTopic := c.Query("topic", "sensor-readings-dlq")
+
+	messages, err := kafka.ReadDLQMessages(h.kafkaBrokers, dlqTopic, limit)
+	if err != nil {
+		log.Error().Err(err).Str("topic", dlqTopic).Msg("Failed to read DLQ messages")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error": fiber.Map{
+				"code":    "DLQ_READ_ERROR",
+				"message": "Failed to read DLQ messages",
+			},
+		})
+	}
+
+	if messages == nil {
+		messages = []kafka.DLQMessage{}
 	}
 
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
-			"connections":  connections,
-			"active_count": len(connections),
-			"total_events": 1523,
-			"timestamp":    time.Now().UTC().Format(time.RFC3339),
+			"messages":  messages,
+			"count":     len(messages),
+			"dlq_topic": dlqTopic,
 		},
 	})
 }
 
 // GetDataFlowStats handles GET /api/v1/pipeline/flow/stats
 func (h *PipelineHandler) GetDataFlowStats(c *fiber.Ctx) error {
-	ctx := context.Background()
+	cached, _ := h.metricsHandler.GetCachedStats()
 
-	// Get sensor count from Redis
-	sensorsKey := "sensors:*"
-	sensorKeys, _ := h.redisClient.Client.Keys(ctx, sensorsKey).Result()
-
-	// Get Kafka topic count
-	config := sarama.NewConfig()
-	config.Version = sarama.V2_6_0_0
-	admin, err := sarama.NewClusterAdmin(h.kafkaBrokers, config)
-
-	topicCount := 0
-	totalMessages := int64(0)
-
-	if err == nil {
-		topicsMap, err := admin.ListTopics()
-		if err == nil {
-			topicCount = len(topicsMap)
-		}
-		admin.Close()
-	}
-
-	// Get Redis key count
-	var cursor uint64
-	redisKeyCount := int64(0)
-	for {
-		keys, newCursor, err := h.redisClient.Client.Scan(ctx, cursor, "*", 100).Result()
-		if err != nil {
-			break
-		}
-		redisKeyCount += int64(len(keys))
-		cursor = newCursor
-		if cursor == 0 {
-			break
+	sseClients := 0
+	if h.broadcaster != nil {
+		if stats := h.broadcaster.GetStats(); stats != nil {
+			if tc, ok := stats["total_clients"].(int); ok {
+				sseClients = tc
+			}
 		}
 	}
 
 	stats := DataFlowStats{
-		Sensors:          len(sensorKeys),
-		KafkaTopics:      topicCount,
-		KafkaMessages:    totalMessages,
-		RedisKeys:        redisKeyCount,
-		DatabaseRecords:  0, // TODO: Get from actual database
-		SSEClients:       1, // TODO: Get from broadcaster
-		ThroughputMsgSec: 0, // TODO: Calculate from metrics
+		Sensors:          int(cached.Database.Sensors),
+		KafkaTopics:      cached.Kafka.TopicCount,
+		KafkaMessages:    cached.Kafka.TotalMessages,
+		RedisKeys:        cached.Redis.KeyCount,
+		DatabaseRecords:  cached.Database.Readings,
+		SSEClients:       sseClients,
+		ThroughputMsgSec: cached.Performance.EstimatedThroughput,
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
 	}
 

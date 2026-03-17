@@ -135,35 +135,6 @@ func (c *Client) GetNearbySensors(ctx context.Context, lat, lon, radiusKm float6
 	return sensorIDs, nil
 }
 
-// SetCityStats caches city-wide statistics
-func (c *Client) SetCityStats(ctx context.Context, stats interface{}) error {
-	key := "city:stats"
-
-	data, err := json.Marshal(stats)
-	if err != nil {
-		return fmt.Errorf("failed to marshal city stats: %w", err)
-	}
-
-	// Cache for 5 minutes
-	if err := c.Set(ctx, key, data, 5*time.Minute).Err(); err != nil {
-		return fmt.Errorf("failed to set city stats: %w", err)
-	}
-
-	return nil
-}
-
-// GetCityStats retrieves cached city-wide statistics
-func (c *Client) GetCityStats(ctx context.Context) ([]byte, error) {
-	key := "city:stats"
-
-	data, err := c.Get(ctx, key).Bytes()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get city stats: %w", err)
-	}
-
-	return data, nil
-}
-
 // AddToPollutionLeaderboard adds a sensor to the pollution leaderboard (sorted set)
 func (c *Client) AddToPollutionLeaderboard(ctx context.Context, sensorID uuid.UUID, value float64) error {
 	key := "pollution:leaderboard"
@@ -191,22 +162,6 @@ func (c *Client) GetTopPolluted(ctx context.Context, limit int) ([]string, error
 	return results, nil
 }
 
-// PublishSensorUpdate publishes a sensor update to Pub/Sub
-func (c *Client) PublishSensorUpdate(ctx context.Context, reading *models.SensorReading) error {
-	channel := "sensor:updates"
-
-	data, err := json.Marshal(reading)
-	if err != nil {
-		return fmt.Errorf("failed to marshal reading: %w", err)
-	}
-
-	if err := c.Publish(ctx, channel, data).Err(); err != nil {
-		return fmt.Errorf("failed to publish update: %w", err)
-	}
-
-	return nil
-}
-
 // Incr increments the value of a key by 1 and returns the new value
 func (c *Client) Incr(ctx context.Context, key string) (int64, error) {
 	result, err := c.Client.Incr(ctx, key).Result()
@@ -228,7 +183,9 @@ func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
 const latestReadingTTL = 30 * time.Minute
 const sensorStreamTTL = 30 * time.Minute
 const sensorStreamMaxLen = 300
-const sessionHeartbeatTTL = 24 * time.Hour
+const totalReadingsKey = "stats:total_readings"
+const distinctSensorsKey = "stats:distinct_sensors"
+const sessionHeartbeatTTL = 30 * time.Second
 const sessionStreamTTL = 90 * time.Second
 const sessionStreamMaxLen = 180
 const sessionConfigTTL = 24 * time.Hour
@@ -438,4 +395,113 @@ func (c *Client) GetSessionEvents(ctx context.Context, sessionID string, limit i
 	}
 	key := fmt.Sprintf("session:events:%s", sessionID)
 	return c.LRange(ctx, key, 0, limit-1).Result()
+}
+
+// IncrTotalReadings increments the global total readings counter.
+func (c *Client) IncrTotalReadings(ctx context.Context) error {
+	return c.Client.Incr(ctx, totalReadingsKey).Err()
+}
+
+// GetTotalReadings returns the global total readings count.
+func (c *Client) GetTotalReadings(ctx context.Context) (int64, error) {
+	val, err := c.Client.Get(ctx, totalReadingsKey).Int64()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return val, err
+}
+
+// AddDistinctSensor adds a sensor ID to the HyperLogLog for distinct sensor tracking.
+func (c *Client) AddDistinctSensor(ctx context.Context, sensorID string) error {
+	return c.PFAdd(ctx, distinctSensorsKey, sensorID).Err()
+}
+
+// GetDistinctSensorCount returns approximate count of distinct sensors that have produced readings.
+func (c *Client) GetDistinctSensorCount(ctx context.Context) (int64, error) {
+	return c.PFCount(ctx, distinctSensorsKey).Result()
+}
+
+// UpdateSessionReadingStats updates per-session reading counters in Redis.
+func (c *Client) UpdateSessionReadingStats(ctx context.Context, sessionID string, value float64) error {
+	if sessionID == "" {
+		return nil
+	}
+	key := fmt.Sprintf("session:reading_stats:%s", sessionID)
+	pipe := c.TxPipeline()
+	pipe.HIncrBy(ctx, key, "total_readings", 1)
+	pipe.HIncrByFloat(ctx, key, "value_sum", value)
+	pipe.HSet(ctx, key, "last_reading_at", time.Now().UTC().Format(time.RFC3339Nano))
+	pipe.Expire(ctx, key, 10*time.Minute) // longer TTL than heartbeat so stats survive brief outages
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetSessionReadingStats retrieves per-session reading stats from Redis.
+func (c *Client) GetSessionReadingStats(ctx context.Context, sessionID string) (totalReadings int64, avgValue float64, lastReadingAt string, err error) {
+	if sessionID == "" {
+		return 0, 0, "", nil
+	}
+	key := fmt.Sprintf("session:reading_stats:%s", sessionID)
+	data, err := c.HGetAll(ctx, key).Result()
+	if err != nil || len(data) == 0 {
+		return 0, 0, "", err
+	}
+
+	if v, ok := data["total_readings"]; ok {
+		fmt.Sscanf(v, "%d", &totalReadings)
+	}
+	var valueSum float64
+	if v, ok := data["value_sum"]; ok {
+		fmt.Sscanf(v, "%f", &valueSum)
+	}
+	if totalReadings > 0 {
+		avgValue = valueSum / float64(totalReadings)
+	}
+	lastReadingAt = data["last_reading_at"]
+	return totalReadings, avgValue, lastReadingAt, nil
+}
+
+// DeleteSessionReadingStats removes per-session reading stats.
+func (c *Client) DeleteSessionReadingStats(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	key := fmt.Sprintf("session:reading_stats:%s", sessionID)
+	return c.Del(ctx, key).Err()
+}
+
+// TrackSessionReading records a reading timestamp in a sorted set for rate calculation.
+func (c *Client) TrackSessionReading(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	key := fmt.Sprintf("session:rate:%s", sessionID)
+	now := float64(time.Now().UnixMicro())
+	pipe := c.TxPipeline()
+	// Use microsecond timestamp as both score and member to ensure uniqueness
+	pipe.ZAdd(ctx, key, redis.Z{Score: now, Member: now})
+	// Remove entries older than 60 seconds
+	cutoff := float64(time.Now().Add(-60 * time.Second).UnixMicro())
+	pipe.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%f", cutoff))
+	pipe.Expire(ctx, key, 2*time.Minute)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetSessionReadingsLastMinute returns the count of readings in the last 60 seconds.
+func (c *Client) GetSessionReadingsLastMinute(ctx context.Context, sessionID string) (int64, error) {
+	if sessionID == "" {
+		return 0, nil
+	}
+	key := fmt.Sprintf("session:rate:%s", sessionID)
+	cutoff := float64(time.Now().Add(-60 * time.Second).UnixMicro())
+	now := float64(time.Now().UnixMicro())
+	// Clean old entries and count in one pipeline
+	pipe := c.TxPipeline()
+	pipe.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%f", cutoff))
+	countCmd := pipe.ZCount(ctx, key, fmt.Sprintf("%f", cutoff), fmt.Sprintf("%f", now))
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	return countCmd.Val(), nil
 }

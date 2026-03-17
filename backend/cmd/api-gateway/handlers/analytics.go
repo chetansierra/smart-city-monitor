@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/chetansierra/smart-city-monitor/internal/models"
 	"github.com/chetansierra/smart-city-monitor/internal/postgres"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
+	"github.com/chetansierra/smart-city-monitor/internal/zones"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -42,7 +44,21 @@ func (h *AnalyticsHandler) GetCityStats(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Try to get from cache first
+	// Try pre-computed cache from aggregation worker first
+	computedKey := "analytics:city-stats:computed"
+	computedCached, err := h.redisClient.Get(ctx, computedKey).Result()
+	if err == nil && computedCached != "" {
+		var stats CityStats
+		if err := json.Unmarshal([]byte(computedCached), &stats); err == nil {
+			log.Debug().Msg("Returning pre-computed city stats")
+			return c.JSON(APIResponse{
+				Success: true,
+				Data:    stats,
+			})
+		}
+	}
+
+	// Fall back to existing cache
 	cacheKey := "analytics:city-stats"
 	cached, err := h.redisClient.Get(ctx, cacheKey).Result()
 	if err == nil && cached != "" {
@@ -202,55 +218,31 @@ func (h *AnalyticsHandler) GetSensorHourlyStats(c *fiber.Ctx) error {
 		to = time.Now()
 	}
 
-	// Get readings and calculate hourly stats
-	readings, err := h.db.GetReadingsInTimeRange(ctx, sensorID, from, to)
+	// Use pre-computed hourly aggregates (sensor_readings no longer persisted)
+	aggregates, err := h.db.GetHourlyAggregates(ctx, sensorID, from, to)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to fetch readings")
+		log.Error().Err(err).Msg("Failed to fetch hourly aggregates")
 		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
 			Success: false,
 			Error: &APIError{
 				Code:    "DATABASE_ERROR",
-				Message: "Failed to fetch readings",
+				Message: "Failed to fetch hourly aggregates",
 			},
 		})
 	}
 
-	// Group by hour and calculate stats
-	hourlyStats := make(map[string]*SensorStats)
-
-	for _, reading := range readings {
-		hourKey := reading.Timestamp.Truncate(time.Hour).Format(time.RFC3339)
-
-		if _, exists := hourlyStats[hourKey]; !exists {
-			hourlyStats[hourKey] = &SensorStats{
-				SensorID:    sensorID.String(),
-				SensorType:  string(reading.SensorType),
-				MinValue:    reading.Value,
-				MaxValue:    reading.Value,
-				PeriodStart: reading.Timestamp.Truncate(time.Hour),
-				PeriodEnd:   reading.Timestamp.Truncate(time.Hour).Add(time.Hour),
-			}
-		}
-
-		stat := hourlyStats[hourKey]
-		stat.AvgValue += reading.Value
-		stat.Count++
-
-		if reading.Value < stat.MinValue {
-			stat.MinValue = reading.Value
-		}
-		if reading.Value > stat.MaxValue {
-			stat.MaxValue = reading.Value
-		}
-	}
-
-	// Calculate averages
-	result := make([]SensorStats, 0, len(hourlyStats))
-	for _, stat := range hourlyStats {
-		if stat.Count > 0 {
-			stat.AvgValue = stat.AvgValue / float64(stat.Count)
-		}
-		result = append(result, *stat)
+	result := make([]SensorStats, 0, len(aggregates))
+	for _, a := range aggregates {
+		result = append(result, SensorStats{
+			SensorID:    sensorID.String(),
+			SensorType:  string(a.SensorType),
+			AvgValue:    a.AvgValue,
+			MinValue:    a.MinValue,
+			MaxValue:    a.MaxValue,
+			Count:       1,
+			PeriodStart: a.PeriodStart,
+			PeriodEnd:   a.PeriodEnd,
+		})
 	}
 
 	return c.JSON(APIResponse{
@@ -339,14 +331,10 @@ func (h *AnalyticsHandler) GetTopPolluted(c *fiber.Ctx) error {
 		topSensors = append(topSensors, topSensor)
 	}
 
-	// Sort by value (descending)
-	for i := 0; i < len(topSensors)-1; i++ {
-		for j := i + 1; j < len(topSensors); j++ {
-			if topSensors[j].AvgValue > topSensors[i].AvgValue {
-				topSensors[i], topSensors[j] = topSensors[j], topSensors[i]
-			}
-		}
-	}
+	// Sort by value (descending) - O(n log n)
+	sort.Slice(topSensors, func(i, j int) bool {
+		return topSensors[i].AvgValue > topSensors[j].AvgValue
+	})
 
 	// Limit results
 	if len(topSensors) > limit {
@@ -430,14 +418,10 @@ func (h *AnalyticsHandler) GetTopTemperature(c *fiber.Ctx) error {
 		topSensors = append(topSensors, topSensor)
 	}
 
-	// Sort by value (descending)
-	for i := 0; i < len(topSensors)-1; i++ {
-		for j := i + 1; j < len(topSensors); j++ {
-			if topSensors[j].AvgValue > topSensors[i].AvgValue {
-				topSensors[i], topSensors[j] = topSensors[j], topSensors[i]
-			}
-		}
-	}
+	// Sort by value (descending) - O(n log n)
+	sort.Slice(topSensors, func(i, j int) bool {
+		return topSensors[i].AvgValue > topSensors[j].AvgValue
+	})
 
 	// Limit results
 	if len(topSensors) > limit {
@@ -521,14 +505,10 @@ func (h *AnalyticsHandler) GetQuietest(c *fiber.Ctx) error {
 		quietestSensors = append(quietestSensors, topSensor)
 	}
 
-	// Sort by value (ascending for quietest)
-	for i := 0; i < len(quietestSensors)-1; i++ {
-		for j := i + 1; j < len(quietestSensors); j++ {
-			if quietestSensors[j].AvgValue < quietestSensors[i].AvgValue {
-				quietestSensors[i], quietestSensors[j] = quietestSensors[j], quietestSensors[i]
-			}
-		}
-	}
+	// Sort by value (ascending for quietest) - O(n log n)
+	sort.Slice(quietestSensors, func(i, j int) bool {
+		return quietestSensors[i].AvgValue < quietestSensors[j].AvgValue
+	})
 
 	// Limit results
 	if len(quietestSensors) > limit {
@@ -556,7 +536,6 @@ type HourlyAggregation struct {
 	MinValue       float64            `json:"min_value"`
 	MaxValue       float64            `json:"max_value"`
 	Count          int                `json:"count"`
-	SensorReadings map[string]float64 `json:"sensor_readings"`
 }
 
 // GetHourlyAggregations handles GET /api/v1/analytics/hourly
@@ -608,70 +587,35 @@ func (h *AnalyticsHandler) GetHourlyAggregations(c *fiber.Ctx) error {
 		to = time.Now()
 	}
 
-	// Fetch all readings in a single bulk query
-	readings, err := h.db.GetReadingsInTimeRangeForAllSensors(ctx, from, to, sensorType)
+	// Use pre-computed aggregates only (sensor_readings no longer persisted)
+	aggregates, err := h.db.GetHourlyAggregatesForAll(ctx, from, to, sensorType)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to fetch readings")
+		log.Error().Err(err).Msg("Failed to fetch hourly aggregates")
 		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
 			Success: false,
 			Error: &APIError{
 				Code:    "DATABASE_ERROR",
-				Message: "Failed to fetch readings",
+				Message: "Failed to fetch hourly aggregates",
 			},
 		})
 	}
 
-	// Aggregate data by hour and sensor type
-	hourlyData := make(map[string]map[string]*HourlyAggregation) // hour -> sensor_type -> data
-
-	for _, reading := range readings {
-		hourKey := reading.Timestamp.Truncate(time.Hour).Format(time.RFC3339)
-		typeKey := string(reading.SensorType)
-
-		if hourlyData[hourKey] == nil {
-			hourlyData[hourKey] = make(map[string]*HourlyAggregation)
-		}
-
-		if hourlyData[hourKey][typeKey] == nil {
-			hourlyData[hourKey][typeKey] = &HourlyAggregation{
-				Hour:           reading.Timestamp.Truncate(time.Hour),
-				SensorType:     typeKey,
-				MinValue:       reading.Value,
-				MaxValue:       reading.Value,
-				SensorReadings: make(map[string]float64),
-			}
-		}
-
-		agg := hourlyData[hourKey][typeKey]
-		agg.AvgValue += reading.Value
-		agg.Count++
-		agg.SensorReadings[reading.SensorID.String()] = reading.Value
-
-		if reading.Value < agg.MinValue {
-			agg.MinValue = reading.Value
-		}
-		if reading.Value > agg.MaxValue {
-			agg.MaxValue = reading.Value
-		}
-	}
-
-	// Calculate averages and flatten result
-	result := make([]HourlyAggregation, 0)
-	for _, typeMap := range hourlyData {
-		for _, agg := range typeMap {
-			if agg.Count > 0 {
-				agg.AvgValue = agg.AvgValue / float64(agg.Count)
-			}
-			result = append(result, *agg)
-		}
+	result := make([]HourlyAggregation, 0, len(aggregates))
+	for _, a := range aggregates {
+		result = append(result, HourlyAggregation{
+			Hour:       a.PeriodStart,
+			SensorType: string(a.SensorType),
+			AvgValue:   a.AvgValue,
+			MinValue:   a.MinValue,
+			MaxValue:   a.MaxValue,
+			Count:      1,
+		})
 	}
 
 	return c.JSON(APIResponse{
 		Success: true,
 		Data:    result,
-		Meta: &Meta{
-			Total: len(result),
-		},
+		Meta:    &Meta{Total: len(result)},
 	})
 }
 
@@ -766,21 +710,9 @@ func (h *AnalyticsHandler) GetZoneAnalytics(c *fiber.Ctx) error {
 		})
 	}
 
-	// Define zones (hardcoded for now - could be moved to database)
-	zones := map[string]struct {
-		MinLat float64
-		MaxLat float64
-		MinLng float64
-		MaxLng float64
-	}{
-		"downtown": {MinLat: 40.710, MaxLat: 40.725, MinLng: -74.015, MaxLng: -74.000},
-		"midtown":  {MinLat: 40.740, MaxLat: 40.765, MinLng: -73.995, MaxLng: -73.975},
-		"uptown":   {MinLat: 40.770, MaxLat: 40.795, MinLng: -73.985, MaxLng: -73.960},
-	}
-
 	zoneStats := make(map[string]*ZoneStats)
 
-	for zoneName, bounds := range zones {
+	for zoneName, bounds := range zones.Zones {
 		zoneStats[zoneName] = &ZoneStats{
 			ZoneName:    zoneName,
 			SensorType:  sensorType,
@@ -854,6 +786,92 @@ func (h *AnalyticsHandler) GetZoneAnalytics(c *fiber.Ctx) error {
 		Data:    result,
 		Meta: &Meta{
 			Total: len(result),
+		},
+	})
+}
+
+// GetAnomalies handles GET /api/v1/analytics/anomalies
+func (h *AnalyticsHandler) GetAnomalies(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	limit := c.QueryInt("limit", 50)
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+
+	sinceStr := c.Query("since", "")
+	since := time.Now().Add(-1 * time.Hour)
+	if sinceStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			since = parsed
+		}
+	}
+
+	anomalies, err := h.db.GetRecentAnomalies(ctx, limit, since)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch anomalies")
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "DATABASE_ERROR",
+				Message: "Failed to fetch anomalies",
+			},
+		})
+	}
+
+	if anomalies == nil {
+		anomalies = []models.AnomalyEvent{}
+	}
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    anomalies,
+		Meta: &Meta{
+			Total: len(anomalies),
+		},
+	})
+}
+
+// GetDetectedEvents handles GET /api/v1/analytics/events
+func (h *AnalyticsHandler) GetDetectedEvents(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	limit := c.QueryInt("limit", 20)
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	sinceStr := c.Query("since", "")
+	since := time.Now().Add(-1 * time.Hour)
+	if sinceStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			since = parsed
+		}
+	}
+
+	events, err := h.db.GetRecentDetectedEvents(ctx, limit, since)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to fetch detected events")
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "DATABASE_ERROR",
+				Message: "Failed to fetch detected events",
+			},
+		})
+	}
+
+	if events == nil {
+		events = []models.DetectedEvent{}
+	}
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data:    events,
+		Meta: &Meta{
+			Total: len(events),
 		},
 	})
 }

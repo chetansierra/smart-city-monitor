@@ -145,6 +145,12 @@ services:
       KAFKA_BROKERS: kafka:9093
       KAFKA_TOPIC_SENSOR_READINGS: sensor-readings
       KAFKA_TOPIC_ADMIN_COMMANDS: admin-commands
+      KAFKA_TOPIC_DLQ: sensor-readings-dlq
+      KAFKA_TOPIC_ANOMALIES: sensor-anomalies
+      CB_THRESHOLD: 5
+      CB_TIMEOUT_SECONDS: 30
+      MAX_RETRIES: 3
+      RETRY_INITIAL_BACKOFF_MS: 100
     networks:
       - smart-city-network
     restart: unless-stopped
@@ -180,7 +186,13 @@ services:
       POSTGRES_MAX_IDLE_CONNECTIONS: 5
       KAFKA_BROKERS: kafka:9093
       KAFKA_TOPIC_SENSOR_READINGS: sensor-readings
+      KAFKA_TOPIC_DLQ: sensor-readings-dlq
+      KAFKA_TOPIC_ANOMALIES: sensor-anomalies
       KAFKA_CONSUMER_GROUP_INGESTION: data-ingestion-group
+      CB_THRESHOLD: 5
+      CB_TIMEOUT_SECONDS: 30
+      MAX_RETRIES: 3
+      RETRY_INITIAL_BACKOFF_MS: 100
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ""
       REDIS_DB: 0
@@ -212,6 +224,10 @@ services:
       POSTGRES_SSLMODE: disable
       KAFKA_BROKERS: kafka:9093
       KAFKA_TOPIC_SENSOR_READINGS: sensor-readings
+      KAFKA_TOPIC_DLQ: sensor-readings-dlq
+      KAFKA_TOPIC_ANOMALIES: sensor-anomalies
+      CB_THRESHOLD: 5
+      CB_TIMEOUT_SECONDS: 30
       SENSOR_COUNT: 50
       GENERATION_INTERVAL_MS: 1000
       SIMULATOR_START_EMPTY: "false"

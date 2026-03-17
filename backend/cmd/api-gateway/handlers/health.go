@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/IBM/sarama"
 	"github.com/chetansierra/smart-city-monitor/internal/postgres"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
 	"github.com/gofiber/fiber/v2"
@@ -11,15 +13,17 @@ import (
 
 // HealthHandler handles health check requests
 type HealthHandler struct {
-	db          *postgres.DB
-	redisClient *redis.Client
+	db           *postgres.DB
+	redisClient  *redis.Client
+	kafkaBrokers []string
 }
 
 // NewHealthHandler creates a new health handler
-func NewHealthHandler(db *postgres.DB, redisClient *redis.Client) *HealthHandler {
+func NewHealthHandler(db *postgres.DB, redisClient *redis.Client, kafkaBrokers ...string) *HealthHandler {
 	return &HealthHandler{
-		db:          db,
-		redisClient: redisClient,
+		db:           db,
+		redisClient:  redisClient,
+		kafkaBrokers: kafkaBrokers,
 	}
 }
 
@@ -72,6 +76,28 @@ func (h *HealthHandler) Check(c *fiber.Ctx) error {
 	} else {
 		services["redis"] = HealthStatus{
 			Status: "healthy",
+		}
+	}
+
+	// Check Kafka
+	if len(h.kafkaBrokers) > 0 {
+		kafkaConfig := sarama.NewConfig()
+		kafkaConfig.Version = sarama.V2_6_0_0
+		kafkaConfig.Net.DialTimeout = 3 * time.Second
+		client, err := sarama.NewClient(h.kafkaBrokers, kafkaConfig)
+		if err != nil {
+			services["kafka"] = HealthStatus{
+				Status:  "unhealthy",
+				Message: err.Error(),
+			}
+			overallStatus = "unhealthy"
+		} else {
+			brokers := client.Brokers()
+			client.Close()
+			services["kafka"] = HealthStatus{
+				Status:  "healthy",
+				Message: fmt.Sprintf("%d broker(s)", len(brokers)),
+			}
 		}
 	}
 

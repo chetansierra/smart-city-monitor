@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { API_BASE_URL, METRIC_KEYS } from '../constants/app';
 import type { HomeSummary, LatestReading, MetricKey, SensorRecord } from '../types/app';
 
-const MAX_TOTAL_SENSORS = 50;
+const MAX_SENSORS_PER_SESSION = 20;
 
 interface Params {
   sessionId: string;
@@ -75,8 +75,8 @@ export function useUserSensors({
 
   const handleAddSensor = async (sensorType: MetricKey = 'temperature') => {
     if (isCreatingSensor || !sessionConfigReady) return;
-    if (userSensorsRef.current.length >= MAX_TOTAL_SENSORS) {
-      setStatusMessage(`Maximum ${MAX_TOTAL_SENSORS} sensors reached.`);
+    if (userSensorsRef.current.length >= MAX_SENSORS_PER_SESSION) {
+      setStatusMessage(`Maximum ${MAX_SENSORS_PER_SESSION} sensors per session.`);
       return;
     }
     setIsCreatingSensor(true);
@@ -91,7 +91,18 @@ export function useUserSensors({
 
       if (!response.ok) {
         if (response.status === 409) {
-          setStatusMessage(`Maximum ${MAX_TOTAL_SENSORS} sensors reached.`);
+          try {
+            const errPayload = await response.json();
+            const code = errPayload?.error?.code;
+            const msg = errPayload?.error?.message;
+            if (code === 'GLOBAL_SENSOR_LIMIT_REACHED') {
+              setStatusMessage(msg || 'Global sensor limit reached. Please try again later.');
+            } else {
+              setStatusMessage(msg || `Maximum ${MAX_SENSORS_PER_SESSION} sensors per session.`);
+            }
+          } catch {
+            setStatusMessage(`Maximum ${MAX_SENSORS_PER_SESSION} sensors per session.`);
+          }
           return;
         }
         throw new Error('Sensor creation failed');
@@ -174,7 +185,7 @@ export function useUserSensors({
     const holdState = holdStateRef.current;
     if (!holdState || holdState.cancelled) return;
 
-    if (direction === 'up' && userSensorsRef.current.length >= MAX_TOTAL_SENSORS) {
+    if (direction === 'up' && userSensorsRef.current.length >= MAX_SENSORS_PER_SESSION) {
       stopContinuousAdjust();
       return;
     }
@@ -187,7 +198,7 @@ export function useUserSensors({
 
     const current = holdStateRef.current;
     if (!current || current.cancelled) return;
-    if (direction === 'up' && userSensorsRef.current.length >= MAX_TOTAL_SENSORS) {
+    if (direction === 'up' && userSensorsRef.current.length >= MAX_SENSORS_PER_SESSION) {
       stopContinuousAdjust();
       return;
     }

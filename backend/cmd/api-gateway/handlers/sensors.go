@@ -638,10 +638,10 @@ func resolveSensorCoordinates(c *fiber.Ctx, cfg redis.SessionConfig) (float64, f
 
 // StartInactivityMonitor starts a background loop to shutdown idle sessions
 func (h *SensorsHandler) StartInactivityMonitor(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	log.Info().Msg("Starting session inactivity monitor (sweep interval: 1m)")
+	log.Info().Msg("Starting session inactivity monitor (sweep interval: 15s, heartbeat TTL: 30s)")
 
 	// Keep track of active sessions we know about
 	activeSessions := make(map[string]time.Time)
@@ -665,21 +665,43 @@ func (h *SensorsHandler) StartInactivityMonitor(ctx context.Context) {
 				activeSessions[id.String()] = time.Now()
 			}
 
-			// 2. Identify sessions that were active but are no longer in Redis (TTL expired)
+			// 2. Identify sessions that were active but are no longer in Redis (heartbeat expired)
 			for idStr, lastSeen := range activeSessions {
 				if !currentRedisMap[idStr] {
-					// Session expired in Redis (24h passed since last activity)
 					sessionID, _ := uuid.Parse(idStr)
 					log.Info().
 						Str("session_id", idStr).
 						Time("last_seen", lastSeen).
-						Msg("Session inactivity detected, shutting down simulation")
+						Msg("Session heartbeat expired, cleaning up sensors")
 
-					cmd := redis.SimulationCommand{
+					// Delete sensors from DB
+					sensors, _ := h.db.GetSensorsBySession(ctx, sessionID)
+					if deleted, err := h.db.DeleteSensorsBySession(ctx, sessionID); err == nil && deleted > 0 {
+						log.Info().Int64("deleted", deleted).Str("session_id", idStr).Msg("Deleted session sensors from DB")
+					}
+
+					// Clean up Redis keys for each sensor
+					for _, sensor := range sensors {
+						h.redisClient.Del(ctx,
+							fmt.Sprintf("sensor:latest:%s", sensor.ID.String()),
+							fmt.Sprintf("sensor:stream:%s", sensor.ID.String()),
+						)
+						// Notify simulator
+						_ = h.redisClient.PublishSimulationCommand(ctx, redis.SimulationCommand{
+							Type:    redis.CommandDeleteSensor,
+							Payload: map[string]interface{}{"id": sensor.ID.String()},
+						})
+					}
+
+					// Also send session shutdown command
+					_ = h.redisClient.PublishSimulationCommand(ctx, redis.SimulationCommand{
 						Type:      redis.CommandShutdownSession,
 						SessionID: sessionID,
-					}
-					_ = h.redisClient.PublishSimulationCommand(ctx, cmd)
+					})
+
+					// Clean up session reading stats
+					_ = h.redisClient.DeleteSessionReadingStats(ctx, idStr)
+
 					delete(activeSessions, idStr)
 				}
 			}
@@ -715,6 +737,83 @@ func (h *SensorsHandler) StartInactivityMonitor(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// TeardownSession handles DELETE /api/v1/session/sensors and POST /api/v1/session/teardown.
+// Deletes all sensors belonging to the calling session (used on browser close via sendBeacon).
+func (h *SensorsHandler) TeardownSession(c *fiber.Ctx) error {
+	// Accept session_id from header or query param (sendBeacon can't set headers)
+	sessionIDStr := c.Get("X-Session-ID")
+	if sessionIDStr == "" {
+		sessionIDStr = c.Query("session_id")
+	}
+	if sessionIDStr == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "MISSING_SESSION_ID",
+				Message: "X-Session-ID header or session_id query param is required",
+			},
+		})
+	}
+	sessionID, err := uuid.Parse(sessionIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "INVALID_SESSION_ID",
+				Message: "Invalid session ID format",
+			},
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Get sensor IDs before deleting so we can clean up Redis + notify simulator
+	sensors, err := h.db.GetSensorsBySession(ctx, sessionID)
+	if err != nil {
+		log.Error().Err(err).Str("session_id", sessionID.String()).Msg("Failed to list session sensors for teardown")
+	}
+
+	deleted, err := h.db.DeleteSensorsBySession(ctx, sessionID)
+	if err != nil {
+		log.Error().Err(err).Str("session_id", sessionID.String()).Msg("Failed to teardown session sensors")
+		return c.Status(fiber.StatusInternalServerError).JSON(APIResponse{
+			Success: false,
+			Error: &APIError{
+				Code:    "DATABASE_ERROR",
+				Message: "Failed to delete session sensors",
+			},
+		})
+	}
+
+	// Best-effort cleanup: Redis keys + simulator notifications
+	for _, sensor := range sensors {
+		h.redisClient.Del(ctx,
+			fmt.Sprintf("sensor:latest:%s", sensor.ID.String()),
+			fmt.Sprintf("sensor:stream:%s", sensor.ID.String()),
+		)
+		_ = h.redisClient.PublishSimulationCommand(ctx, redis.SimulationCommand{
+			Type: redis.CommandDeleteSensor,
+			Payload: map[string]interface{}{
+				"id": sensor.ID.String(),
+			},
+		})
+	}
+
+	log.Info().
+		Str("session_id", sessionID.String()).
+		Int64("deleted", deleted).
+		Msg("Session teardown: deleted all sensors")
+
+	return c.JSON(APIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"session_id":      sessionID.String(),
+			"sensors_deleted": deleted,
+		},
+	})
 }
 
 // APIResponse is a standardized response format

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/IBM/sarama"
+	"github.com/chetansierra/smart-city-monitor/internal/kafka"
 	"github.com/chetansierra/smart-city-monitor/internal/redis"
 	"github.com/chetansierra/smart-city-monitor/internal/sse"
 	"github.com/gofiber/fiber/v2"
@@ -16,15 +18,21 @@ import (
 
 // SSEHandler handles Server-Sent Events connections
 type SSEHandler struct {
-	broadcaster *sse.Broadcaster
-	redisClient *redis.Client
+	broadcaster   *sse.Broadcaster
+	redisClient   *redis.Client
+	kafkaBrokers  []string
+	kafkaTopics   []string
+	consumerGroup string
 }
 
 // NewSSEHandler creates a new SSE handler
-func NewSSEHandler(broadcaster *sse.Broadcaster, redisClient *redis.Client) *SSEHandler {
+func NewSSEHandler(broadcaster *sse.Broadcaster, redisClient *redis.Client, kafkaBrokers []string, kafkaTopics []string, consumerGroup string) *SSEHandler {
 	return &SSEHandler{
-		broadcaster: broadcaster,
-		redisClient: redisClient,
+		broadcaster:   broadcaster,
+		redisClient:   redisClient,
+		kafkaBrokers:  kafkaBrokers,
+		kafkaTopics:   kafkaTopics,
+		consumerGroup: consumerGroup,
 	}
 }
 
@@ -79,51 +87,85 @@ func (h *SSEHandler) HandleStream(c *fiber.Ctx) error {
 	return nil
 }
 
-// StartRedisPubSubListener starts listening to Redis pub/sub for sensor updates
-func (h *SSEHandler) StartRedisPubSubListener(ctx context.Context) {
-	pubsub := h.redisClient.Subscribe(ctx, "sensor:updates")
-	defer pubsub.Close()
-
-	log.Info().Msg("SSE handler listening to Redis sensor:updates channel")
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info().Msg("Stopping Redis pub/sub listener")
-			return
-
-		case msg := <-pubsub.Channel():
-			if msg == nil {
-				continue
-			}
-
-			// Parse the sensor update message
-			var update map[string]interface{}
-			if err := json.Unmarshal([]byte(msg.Payload), &update); err != nil {
-				log.Error().
-					Err(err).
-					Str("payload", msg.Payload).
-					Msg("Failed to parse sensor update from Redis")
-				continue
-			}
-
-			// Extract session ID if available
-			var sessionID string
-			if sid, ok := update["session_id"].(string); ok {
-				sessionID = sid
-			}
-
-			// Cache live event per-session for short-lived page reload recovery.
-			if sessionID != "" {
-				if err := h.redisClient.AppendSessionEvent(ctx, sessionID, msg.Payload); err != nil {
-					log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to cache session live event")
-				}
-			}
-
-			// Broadcast to SSE clients
-			h.broadcaster.BroadcastSensorUpdate(sessionID, update)
-		}
+// StartKafkaConsumer starts consuming from Kafka topics for real-time SSE updates.
+// Replaces the previous Redis Pub/Sub listener — Kafka is the single source of truth.
+func (h *SSEHandler) StartKafkaConsumer(ctx context.Context) {
+	consumer, err := kafka.NewConsumer(kafka.ConsumerConfig{
+		Brokers:       h.kafkaBrokers,
+		GroupID:       h.consumerGroup,
+		Topics:        h.kafkaTopics,
+		InitialOffset: sarama.OffsetNewest,
+		// No DLQ/retry — dropped real-time messages are acceptable
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create Kafka consumer for SSE")
 	}
+	defer consumer.Close()
+
+	log.Info().Strs("topics", h.kafkaTopics).Str("group", h.consumerGroup).Msg("SSE handler consuming from Kafka topics")
+
+	if err := consumer.ConsumeWithTopics(ctx, h.kafkaTopics, h.handleKafkaMessage); err != nil {
+		log.Error().Err(err).Msg("Kafka consumer for SSE stopped with error")
+	}
+}
+
+// handleKafkaMessage routes messages from different Kafka topics to the appropriate SSE broadcast.
+func (h *SSEHandler) handleKafkaMessage(topic string, message []byte) error {
+	switch {
+	case isSensorReadingsTopic(topic):
+		var update map[string]interface{}
+		if err := json.Unmarshal(message, &update); err != nil {
+			log.Error().Err(err).Msg("Failed to parse sensor reading from Kafka")
+			return nil // don't retry bad messages
+		}
+
+		var sessionID string
+		if sid, ok := update["session_id"].(string); ok {
+			sessionID = sid
+		}
+
+		if sessionID != "" {
+			if err := h.redisClient.AppendSessionEvent(context.Background(), sessionID, string(message)); err != nil {
+				log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to cache session live event")
+			}
+		}
+
+		h.broadcaster.BroadcastSensorUpdate(sessionID, update)
+
+	case isAnomaliesTopic(topic):
+		var anomalyData map[string]interface{}
+		if err := json.Unmarshal(message, &anomalyData); err != nil {
+			log.Error().Err(err).Msg("Failed to parse anomaly event from Kafka")
+			return nil
+		}
+		h.broadcaster.BroadcastAnomaly(anomalyData)
+
+	case isEventsTopic(topic):
+		var eventData map[string]interface{}
+		if err := json.Unmarshal(message, &eventData); err != nil {
+			log.Error().Err(err).Msg("Failed to parse detected event from Kafka")
+			return nil
+		}
+		h.broadcaster.BroadcastEvent(eventData)
+
+	default:
+		log.Warn().Str("topic", topic).Msg("Received message from unknown topic")
+	}
+
+	return nil
+}
+
+// Topic matching helpers — use suffix matching so topic names are configurable.
+func isSensorReadingsTopic(topic string) bool {
+	return topic == "sensor-readings"
+}
+
+func isAnomaliesTopic(topic string) bool {
+	return topic == "sensor-anomalies"
+}
+
+func isEventsTopic(topic string) bool {
+	return topic == "sensor-events"
 }
 
 // GetStats returns SSE broadcaster statistics

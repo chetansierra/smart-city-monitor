@@ -169,6 +169,13 @@
   font-size: 0.9rem;
 }
 
+.nerds-refresh-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
 .nerds-scope-toggle {
   display: inline-flex;
   align-items: center;
@@ -195,6 +202,36 @@
   color: var(--brand-strong);
   border-color: var(--border);
   background: var(--surface-soft);
+}
+
+.scope-btn.refresh-btn {
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.scope-btn.refresh-btn:hover {
+  color: var(--brand-strong);
+  background: var(--surface-soft);
+}
+
+.polling-dot-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-left: 0.5rem;
+  white-space: nowrap;
+}
+.polling-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-strong);
+  animation: polling-pulse 2s ease-in-out infinite;
+}
+@keyframes polling-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
 .nerds-grid {
@@ -479,6 +516,21 @@
   margin-top: 0.2rem;
 }
 
+.pipeline-card {
+  margin-top: 0.2rem;
+}
+
+.pipeline-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.pipeline-card-header .summary-label {
+  margin: 0;
+}
+
 .global-map-legend {
   margin-top: 0.2rem;
   display: flex;
@@ -722,5 +774,177 @@
 
   .zoom-controls {
     margin-left: 0;
+  }
+}
+
+/* ── Scenario Banner ───────────────────────────────────────────────── */
+
+.scenario-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+}
+
+.scenario-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  animation: banner-in 0.3s ease-out;
+}
+
+.scenario-banner-industrial_incident {
+  --accent: #ef4444;
+}
+.scenario-banner-heatwave {
+  --accent: #f59e0b;
+}
+.scenario-banner-rush_hour {
+  --accent: #6366f1;
+}
+
+.scenario-banner strong {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  white-space: nowrap;
+}
+
+.scenario-zone {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.scenario-desc {
+  opacity: 0.8;
+}
+
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Anomaly Feed ──────────────────────────────────────────────────── */
+
+.anomaly-feed-panel {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.anomaly-feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.anomaly-feed-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  background: color-mix(in srgb, var(--text) 4%, var(--surface));
+  animation: banner-in 0.25s ease-out;
+}
+
+.anomaly-type {
+  font-weight: 600;
+  text-transform: capitalize;
+  min-width: 5rem;
+}
+
+.anomaly-value {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  opacity: 0.85;
+}
+
+.anomaly-time {
+  margin-left: auto;
+  opacity: 0.55;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+/* ── Pipeline visual ────────────────────────────────────────────── */
+
+.pipeline-throughput {
+  font-weight: 700;
+  color: var(--brand-strong, #16a34a);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pipeline-error {
+  color: #ef4444;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.pipeline-svg-wrapper {
+  overflow-x: auto;
+}
+
+.pipeline-svg {
+  width: 100%;
+  height: auto;
+  min-height: 200px;
+}
+
+.pipeline-node-shape {
+  fill: var(--surface-soft, #f8fafc);
+  stroke: var(--border, #d1d5db);
+  stroke-width: 1.5;
+  transition: fill 0.2s;
+}
+
+.pipeline-node-label {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.pipeline-node-stat {
+  fill: var(--brand-strong, #16a34a);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.pipeline-edge {
+  fill: none;
+  stroke: var(--border, #d1d5db);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+.pipeline-particle {
+  fill: var(--brand-strong, #16a34a);
+  filter: url(#pipeline-glow);
+  opacity: 0.9;
+}
+
+@media (max-width: 720px) {
+  .pipeline-svg-wrapper {
+    padding: 0.75rem;
+  }
+
+  .pipeline-page {
+    padding: 1rem 0.75rem;
   }
 }

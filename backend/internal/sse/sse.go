@@ -108,6 +108,16 @@ func (b *Broadcaster) BroadcastStats(data interface{}) {
 	b.broadcast("", "stats_update", data)
 }
 
+// BroadcastAnomaly broadcasts an anomaly event to all clients.
+func (b *Broadcaster) BroadcastAnomaly(data interface{}) {
+	b.broadcast("", "anomaly", data)
+}
+
+// BroadcastEvent broadcasts a detected scenario event to all clients.
+func (b *Broadcaster) BroadcastEvent(data interface{}) {
+	b.broadcast("", "scenario_detected", data)
+}
+
 func (b *Broadcaster) broadcast(sessionID string, eventType string, data interface{}) {
 	event := Event{
 		Type: eventType,
@@ -134,4 +144,17 @@ func (b *Broadcaster) GetStats() map[string]interface{} {
 	return map[string]interface{}{
 		"total_clients": len(b.clients),
 	}
+}
+
+// HasSession returns true if at least one SSE client is connected for the given session ID.
+func (b *Broadcaster) HasSession(sessionID string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, sid := range b.clients {
+		if sid == sessionID {
+			return true
+		}
+	}
+	return false
 }

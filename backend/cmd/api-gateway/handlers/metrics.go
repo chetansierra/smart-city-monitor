@@ -177,8 +177,9 @@ type NerdStatsResponse struct {
 		GCCyclesTotal uint32  `json:"gc_cycles_total"`
 	} `json:"system"`
 	Database struct {
-		Sensors  int64 `json:"sensors"`
-		Readings int64 `json:"readings"`
+		Sensors             int64 `json:"sensors"`
+		TotalSensorsCreated int64 `json:"total_sensors_created"`
+		Readings            int64 `json:"readings"`
 	} `json:"database"`
 	Redis struct {
 		KeyCount         int64   `json:"key_count"`
@@ -220,14 +221,8 @@ type SessionNerdStatsResponse struct {
 	} `json:"session"`
 	Realtime struct {
 		EstimatedThroughput float64 `json:"estimated_throughput_msg_sec"`
-		ActiveSSEClients    int64   `json:"active_sse_clients"`
+		SSEConnected        bool    `json:"sse_connected"`
 	} `json:"realtime"`
-	System struct {
-		UptimeSec               int64 `json:"uptime_sec"`
-		Goroutines              int   `json:"goroutines"`
-		GlobalGoroutines        int64 `json:"global_goroutines"`
-		SessionWorkerGoroutines int64 `json:"session_worker_goroutines"`
-	} `json:"system"`
 	Timestamp string `json:"timestamp"`
 }
 
@@ -683,18 +678,7 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 
 	resp := SessionNerdStatsResponse{}
 	resp.Session.SessionID = sessionID
-	resp.System.UptimeSec = int64(time.Since(h.startedAt).Seconds())
 	resp.Timestamp = time.Now().UTC().Format(time.RFC3339)
-
-	globalGoroutines := int64(runtime.NumGoroutine())
-	resp.System.GlobalGoroutines = globalGoroutines
-	resp.System.Goroutines = int(globalGoroutines)
-
-	if sessionWorkers, err := h.redisClient.GetSessionWorkerGoroutines(ctx, sessionID); err == nil {
-		resp.System.SessionWorkerGoroutines = sessionWorkers
-	} else {
-		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session worker goroutines")
-	}
 
 	if err := h.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -704,37 +688,28 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session sensors count")
 	}
 
-	var lastReadingAt *time.Time
-	if err := h.db.QueryRowContext(ctx, `
-		SELECT
-			COUNT(*),
-			COALESCE(AVG(value), 0),
-			MAX(timestamp)
-		FROM sensor_readings
-		WHERE session_id = $1
-	`, sessionUUID).Scan(&resp.Session.Readings, &resp.Session.AvgSensorValue, &lastReadingAt); err != nil {
-		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session reading stats")
-	}
-	if lastReadingAt != nil {
-		resp.Session.LastReadingAt = lastReadingAt.UTC().Format(time.RFC3339)
+	// Session reading stats from Redis counters (no sensor_readings table)
+	if totalReadings, avgValue, lastReadingAt, err := h.redisClient.GetSessionReadingStats(ctx, sessionID); err == nil {
+		resp.Session.Readings = totalReadings
+		resp.Session.AvgSensorValue = avgValue
+		if lastReadingAt != "" {
+			resp.Session.LastReadingAt = lastReadingAt
+		}
+	} else {
+		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session reading stats from Redis")
 	}
 
-	if err := h.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM sensor_readings
-		WHERE session_id = $1
-		  AND timestamp > NOW() - INTERVAL '1 minute'
-	`, sessionUUID).Scan(&resp.Session.ReadingsLastMin); err != nil {
-		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to read session minute throughput")
+	// Actual readings in the last 60 seconds from Redis sliding window
+	if readingsLastMin, err := h.redisClient.GetSessionReadingsLastMinute(ctx, sessionID); err == nil {
+		resp.Session.ReadingsLastMin = readingsLastMin
+	} else {
+		log.Warn().Err(err).Str("session_id", sessionID).Msg("Failed to get session readings rate")
 	}
 
 	resp.Realtime.EstimatedThroughput = float64(resp.Session.ReadingsLastMin) / 60.0
 
 	if h.broadcaster != nil {
-		stats := h.broadcaster.GetStats()
-		if totalClients, ok := stats["total_clients"].(int); ok {
-			resp.Realtime.ActiveSSEClients = int64(totalClients)
-		}
+		resp.Realtime.SSEConnected = h.broadcaster.HasSession(sessionID)
 	}
 
 	return c.JSON(fiber.Map{
@@ -747,7 +722,7 @@ func (h *MetricsHandler) GetSessionNerdStats(c *fiber.Ctx) error {
 func (h *MetricsHandler) StartNerdStatsAggregator(ctx context.Context) {
 	fastTicker := time.NewTicker(10 * time.Second)
 	redisTicker := time.NewTicker(10 * time.Second)
-	deepTicker := time.NewTicker(45 * time.Second)
+	deepTicker := time.NewTicker(15 * time.Second)
 	heartbeatTicker := time.NewTicker(15 * time.Second)
 	defer fastTicker.Stop()
 	defer redisTicker.Stop()
@@ -846,7 +821,8 @@ func (h *MetricsHandler) refreshRedisStats(ctx context.Context) {
 	s.Redis.ConnectedClients = connectedClients
 	s.Redis.TotalCommands = totalCommands
 	s.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	h.recomputeThroughput(&s)
+	// Don't call recomputeThroughput here — Kafka.TotalMessages only updates
+	// in refreshDeepStats, so calling it here would zero out throughput.
 	h.cachedStats = s
 	h.cacheReady = true
 	h.cacheMu.Unlock()
@@ -858,9 +834,24 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 		log.Warn().Err(err).Msg("Failed to read sensors count for nerd stats")
 	}
 
+	// Total readings from Redis counter (no sensor_readings table)
 	var readings int64
-	if err := h.db.QueryRowContext(ctx, "SELECT COALESCE(reltuples, 0)::bigint FROM pg_class WHERE relname = 'sensor_readings'").Scan(&readings); err != nil {
-		log.Warn().Err(err).Msg("Failed to read sensor_readings count estimate for nerd stats")
+	if count, err := h.redisClient.GetTotalReadings(ctx); err == nil {
+		readings = count
+	} else {
+		log.Warn().Err(err).Msg("Failed to read total readings count from Redis")
+	}
+
+	// Total distinct sensors ever created from Redis HyperLogLog
+	var totalSensorsCreated int64
+	if count, err := h.redisClient.GetDistinctSensorCount(ctx); err == nil {
+		totalSensorsCreated = count
+	} else {
+		log.Warn().Err(err).Msg("Failed to count total sensors ever created from Redis")
+	}
+	// Active sensors is always >= total ever created (sensors that still exist)
+	if totalSensorsCreated < sensors {
+		totalSensorsCreated = sensors
 	}
 
 	var sessionsWithSensors int64
@@ -921,6 +912,7 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 	h.cacheMu.Lock()
 	s := h.cachedStats
 	s.Database.Sensors = sensors
+	s.Database.TotalSensorsCreated = totalSensorsCreated
 	s.Database.Readings = readings
 	s.Platform.SessionsWithSensors = sessionsWithSensors
 	s.Platform.AvgReadingsPerSensor = avgReadingsPerSensor
@@ -933,6 +925,12 @@ func (h *MetricsHandler) refreshDeepStats(ctx context.Context) {
 	h.cachedStats = s
 	h.cacheReady = true
 	h.cacheMu.Unlock()
+}
+
+func (h *MetricsHandler) GetCachedStats() (NerdStatsResponse, bool) {
+	h.cacheMu.RLock()
+	defer h.cacheMu.RUnlock()
+	return h.cachedStats, h.cacheReady
 }
 
 func (h *MetricsHandler) recomputeThroughput(s *NerdStatsResponse) {
@@ -954,14 +952,12 @@ func (h *MetricsHandler) recomputeThroughput(s *NerdStatsResponse) {
 	}
 
 	kafkaDelta := float64(s.Kafka.TotalMessages - h.lastKafkaMsg)
-	redisDelta := float64(s.Redis.TotalCommands - h.lastRedisCmd)
 	if kafkaDelta < 0 {
 		kafkaDelta = 0
 	}
-	if redisDelta < 0 {
-		redisDelta = 0
-	}
-	s.Performance.EstimatedThroughput = (kafkaDelta + redisDelta) / elapsed
+	// Only use Kafka message delta — Redis commands include internal housekeeping
+	// and don't reflect actual sensor data throughput.
+	s.Performance.EstimatedThroughput = kafkaDelta / elapsed
 
 	h.lastSampleAt = now
 	h.lastKafkaMsg = s.Kafka.TotalMessages
