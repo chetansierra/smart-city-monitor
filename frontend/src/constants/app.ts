@@ -10,7 +10,7 @@ export const ZOOM_LEVEL_KEY = 'smart_city_chart_zoom';
 export const NERD_SCOPE_KEY = 'smart_city_nerd_scope';
 export const MAPS_SCRIPT_ID = 'smart-city-google-maps-script';
 
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1';
+export const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1').trim();
 export const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
 export const NEW_DELHI_COORDS = {

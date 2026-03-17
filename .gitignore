@@ -87,6 +87,10 @@ frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
 
+# AWS
+*.pem
+ec2-instance.json
+
 # Kubernetes secrets (if any)
 k8s/secrets/
 k8s/*.secret.yaml

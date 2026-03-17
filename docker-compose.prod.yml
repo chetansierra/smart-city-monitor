@@ -12,35 +12,35 @@
 
 services:
   # Kafka — KRaft mode (no Zookeeper needed)
-  # Uses Bitnami image which has first-class KRaft support.
+  # Uses Apache official image with KRaft support.
   kafka:
-    image: bitnami/kafka:3.7
+    image: apache/kafka:3.7.0
     container_name: kafka
     restart: unless-stopped
     environment:
       # KRaft: this node is both broker and controller
-      KAFKA_CFG_NODE_ID: 1
-      KAFKA_CFG_PROCESS_ROLES: controller,broker
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       # Listeners: PLAINTEXT for clients (Go services), CONTROLLER for KRaft quorum
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       # Single-node: replication factor 1 is correct
-      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       # 256MB heap is plenty for 50 sensors — keeps t2.micro memory comfortable
       KAFKA_HEAP_OPTS: "-Xmx256M -Xms128M"
     volumes:
-      - kafka-data:/bitnami/kafka
+      - kafka-data:/tmp/kraft-combined-logs
     networks:
       - smart-city-network
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -62,11 +62,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # Caddy — reverse proxy with automatic HTTPS (Let's Encrypt)
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    networks:
+      - smart-city-network
+
   # API Gateway — REST API + SSE server
   api-gateway:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.api-gateway
+    image: chetansierra/smart-city-api-gateway:latest
     container_name: api-gateway
     restart: unless-stopped
     env_file: .env.prod
@@ -75,8 +91,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8080:8080"
     networks:
       - smart-city-network
     healthcheck:
@@ -87,9 +101,7 @@ services:
 
   # Data Ingestion — Kafka consumer → PostgreSQL + Redis
   data-ingestion:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.data-ingestion
+    image: chetansierra/smart-city-data-ingestion:latest
     container_name: data-ingestion
     restart: unless-stopped
     env_file: .env.prod
@@ -103,9 +115,7 @@ services:
 
   # Sensor Simulator — generates mock sensor readings
   sensor-simulator:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.sensor-simulator
+    image: chetansierra/smart-city-sensor-simulator:latest
     container_name: sensor-simulator
     restart: unless-stopped
     env_file: .env.prod
@@ -124,3 +134,5 @@ networks:
 volumes:
   kafka-data:
   redis-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,5 @@
+api.chetansierra.in {
+	reverse_proxy api-gateway:8080 {
+		flush_interval -1
+	}
+}
