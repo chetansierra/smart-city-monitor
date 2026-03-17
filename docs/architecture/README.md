@@ -1,28 +1,33 @@
-# Architecture Docs
+# Smart City Monitor — Architecture Documentation
 
-This folder is the source of truth for system architecture.
+This directory contains the architecture documentation for the Smart City Monitor platform. Each document is self-contained and can be read independently.
 
-## Structure
+## Document Index
 
-- `overview.md`: High-level architecture and core data flow.
-- `services/`: Service-specific architecture and responsibilities.
-- `technologies/`: Technology-specific operational notes and configuration.
+### System Overview
 
-## Service Docs
+- [overview.md](overview.md) — High-level system architecture, data flow, and design principles.
 
-- `services/frontend.md`
-- `services/api-gateway.md`
-- `services/data-ingestion.md`
-- `services/sensor-simulator.md`
+### Service Documentation
 
-## Technology Docs
+- [services/sensor-simulator.md](services/sensor-simulator.md) — Sensor data generation, Kafka production, circuit breaker, message buffering.
+- [services/data-ingestion.md](services/data-ingestion.md) — Kafka consumption, retry/DLQ, anomaly detection, pattern detection, aggregation.
+- [services/api-gateway.md](services/api-gateway.md) — REST API, SSE streaming, Kafka multi-topic consumer, session management.
+- [services/frontend.md](services/frontend.md) — React 19 SPA, Google Maps, SSE client, anomaly feed.
 
-- `technologies/redis.md`
-- `technologies/kafka.md`
-- `technologies/zookeeper.md`
-- `technologies/postgresql.md`
-- `technologies/sse.md`
+### Technology Documentation
 
-## Documentation Rule
+- [technologies/kafka.md](technologies/kafka.md) — KRaft mode, topics, partitioning, consumer groups, DLQ.
+- [technologies/redis.md](technologies/redis.md) — Caching, keyspace design, TTL policy, Pub/Sub channels.
+- [technologies/postgresql.md](technologies/postgresql.md) — Schema, tables, aggregates, no raw reading persistence.
+- [technologies/sse.md](technologies/sse.md) — SSE broadcaster, event types, connection lifecycle.
 
-When a service/technology behavior changes, update the corresponding file here in the same PR.
+### Cross-Cutting Concerns
+
+- [resilience.md](resilience.md) — Circuit breakers, retry with backoff, dead letter queue.
+- [intelligence.md](intelligence.md) — Anomaly detection (Welford's algorithm), zone-level pattern detection.
+- [deployment.md](deployment.md) — Docker Compose, production deployment, Kubernetes.
+
+## Maintenance Rule
+
+When any service behavior, data model, or technology configuration changes, update the corresponding document in this directory as part of the same PR or commit.

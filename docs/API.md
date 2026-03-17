@@ -1,107 +1,50 @@
-# Smart City Monitor API Documentation
+# Smart City Monitor — API Reference
 
-**Version:** 1.0
 **Base URL:** `http://localhost:8080`
-**Last Updated:** November 19, 2025
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Authentication](#authentication)
-3. [Response Format](#response-format)
-4. [Error Codes](#error-codes)
-5. [Endpoints](#endpoints)
-   - [Health Check](#health-check)
-   - [Sensors](#sensors)
-   - [Readings](#readings)
-   - [Analytics](#analytics)
-   - [Alerts](#alerts)
-   - [SSE](#sse)
-
----
+**Last Updated:** March 2026
 
 ## Overview
 
-The Smart City Monitor API provides real-time access to environmental sensor data across a city. It includes:
-
-- **21 REST API endpoints**
-- **1 SSE endpoint** for real-time updates
-- **4 sensor types**: Temperature, Pollution, Humidity, Noise
-- **Real-time alerts** when environmental thresholds are exceeded
-
----
+The API Gateway exposes REST endpoints for sensor management, analytics, system metrics, pipeline visualization, and admin controls. All real-time data is delivered via SSE (see `/stream`). Rate limiting is applied to all `/api/v1` routes via Redis.
 
 ## Authentication
 
-**Current Version:** No authentication required (development mode)
-
-**Future Versions:** Will implement JWT-based authentication
-
----
+No authentication required (development mode). Session tracking via `X-Session-ID` header.
 
 ## Response Format
 
-### Success Response
+### Success
 
 ```json
 {
   "success": true,
   "data": { ... },
-  "meta": {
-    "page": 1,
-    "limit": 10,
-    "total": 100
-  }
+  "meta": { "page": 1, "limit": 10, "total": 100 }
 }
 ```
 
-### Error Response
+### Error
 
 ```json
 {
   "success": false,
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human-readable error message"
-  }
+  "error": { "code": "ERROR_CODE", "message": "Human-readable message" }
 }
 ```
 
 ---
 
-## Error Codes
+## Health Check
 
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `ERROR_400` | 400 | Bad Request - Invalid input parameters |
-| `ERROR_404` | 404 | Not Found - Resource doesn't exist |
-| `ERROR_500` | 500 | Internal Server Error |
-| `SENSOR_NOT_FOUND` | 404 | Sensor with specified ID not found |
-| `INVALID_SENSOR_ID` | 400 | Invalid UUID format for sensor ID |
-| `INVALID_TIME_RANGE` | 400 | Invalid from/to timestamp parameters |
-| `ALERT_NOT_FOUND` | 404 | Alert not found or already acknowledged |
-| `DATABASE_ERROR` | 500 | Database query failed |
+### `GET /health`
 
----
-
-## Endpoints
-
-### Health Check
-
-#### `GET /health`
-
-Check the health status of the API and its dependencies.
-
-**Response:**
+Returns health status of PostgreSQL, Redis, and Kafka.
 
 ```json
 {
   "success": true,
   "data": {
     "status": "healthy",
-    "timestamp": "2025-11-19T21:30:00Z",
     "services": {
       "postgres": "healthy",
       "redis": "healthy",
@@ -111,748 +54,238 @@ Check the health status of the API and its dependencies.
 }
 ```
 
-**cURL Example:**
+---
 
-```bash
-curl http://localhost:8080/health
-```
+## SSE Streaming
+
+### `GET /stream?session_id=<uuid>`
+
+Server-Sent Events endpoint. Delivers three event types:
+
+| Event Type | Description |
+|------------|-------------|
+| `sensor_update` | Live sensor reading |
+| `anomaly` | Z-score anomaly detection |
+| `scenario_detected` | Zone-level pattern detection |
+
+### `GET /stream/stats`
+
+Returns SSE connection count and statistics.
+
+### `GET /api/v1/stream/history`
+
+Returns recent SSE events for the current session.
 
 ---
 
-### Sensors
+## Sensors — `/api/v1/sensors`
 
-#### `GET /api/v1/sensors`
+### `GET /api/v1/sensors`
 
-List all sensors with optional filtering and pagination.
+List all sensors. Supports filtering by `type` and pagination (`page`, `limit`).
 
-**Query Parameters:**
+### `GET /api/v1/sensors/footprint`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | string | - | Filter by sensor type: `temperature`, `pollution`, `humidity`, `noise` |
-| `page` | integer | 1 | Page number |
-| `limit` | integer | 10 | Results per page (max: 1000) |
+Get geographic footprint of all sensors.
 
-**Response:**
+### `GET /api/v1/sensors/:id`
 
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "name": "Downtown Temp 1",
-      "type": "temperature",
-      "location": {
-        "latitude": 40.7128,
-        "longitude": -74.0060
-      },
-      "status": "active",
-      "last_reading": "2025-11-19T21:30:00Z"
-    }
-  ],
-  "meta": {
-    "page": 1,
-    "limit": 10,
-    "total": 50
-  }
-}
-```
+Get a specific sensor by UUID.
 
-**cURL Examples:**
+### `GET /api/v1/sensors/:id/latest`
 
-```bash
-# Get all sensors
-curl http://localhost:8080/api/v1/sensors
+Get the latest reading for a sensor (from Redis cache).
 
-# Get temperature sensors only
-curl "http://localhost:8080/api/v1/sensors?type=temperature"
+### `GET /api/v1/sensors/:id/readings`
 
-# Get page 2 with 20 results
-curl "http://localhost:8080/api/v1/sensors?page=2&limit=20"
-```
+Get historical readings. Query params: `from`, `to`, `limit`.
+
+### `POST /api/v1/sensors/start`
+
+Create and start a new sensor. Body: `{ "name", "type", "latitude", "longitude" }`. Sensor is tagged with the session ID.
+
+### `DELETE /api/v1/sensors/:id`
+
+Delete a sensor.
 
 ---
 
-#### `GET /api/v1/sensors/:id`
+## Session — `/api/v1/session`
 
-Get details of a specific sensor.
+### `GET /api/v1/session/config`
 
-**Path Parameters:**
+Get session sensor configuration.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | UUID | Sensor ID |
+### `PUT /api/v1/session/config`
 
-**Response:**
+Update session configuration.
 
-```json
-{
-  "success": true,
-  "data": {
-    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "name": "Downtown Temp 1",
-    "type": "temperature",
-    "location": {
-      "latitude": 40.7128,
-      "longitude": -74.0060
-    },
-    "status": "active",
-    "last_reading": "2025-11-19T21:30:00Z",
-    "unit": "celsius"
-  }
-}
-```
+### `DELETE /api/v1/session/sensors`
 
-**cURL Example:**
+Teardown all sensors for the current session.
 
-```bash
-curl http://localhost:8080/api/v1/sensors/a1b2c3d4-e5f6-7890-abcd-ef1234567890
-```
+### `POST /api/v1/session/teardown`
+
+Teardown endpoint for `sendBeacon` (browser close). Same as DELETE but accepts POST for beacon compatibility.
 
 ---
 
-#### `GET /api/v1/sensors/:id/latest`
+## Readings — `/api/v1/readings`
 
-Get the latest reading from a sensor (from Redis cache).
+### `GET /api/v1/readings`
 
-**Path Parameters:**
+Get readings with filtering (`sensor_id`, `sensor_type`, `from`, `to`) and pagination (`page`, `limit`, `sort`).
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | UUID | Sensor ID |
+### `GET /api/v1/readings/latest`
 
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": {
-    "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "sensor_type": "temperature",
-    "value": 22.5,
-    "unit": "celsius",
-    "timestamp": "2025-11-19T21:30:00Z"
-  }
-}
-```
-
-**cURL Example:**
-
-```bash
-curl http://localhost:8080/api/v1/sensors/a1b2c3d4-e5f6-7890-abcd-ef1234567890/latest
-```
+Get latest readings from all sensors, grouped by type.
 
 ---
 
-#### `GET /api/v1/sensors/:id/readings`
+## Analytics — `/api/v1/analytics`
 
-Get historical readings for a specific sensor.
+All analytics endpoints serve pre-computed data from `sensor_aggregates` and Redis cache. No raw reading queries.
 
-**Path Parameters:**
+### `GET /api/v1/analytics/city-stats`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | UUID | Sensor ID |
+City-wide averages for all sensor types. Cached 5 minutes.
 
-**Query Parameters:**
+### `GET /api/v1/analytics/sensors/:id/hourly`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `from` | timestamp | - | Start time (RFC3339 format) |
-| `to` | timestamp | - | End time (RFC3339 format) |
-| `limit` | integer | 100 | Max results (max: 10000) |
+Hourly aggregated stats for a sensor. Query params: `from`, `to` (required).
 
-**Response:**
+### `GET /api/v1/analytics/top-polluted?limit=N`
 
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "value": 22.5,
-      "timestamp": "2025-11-19T21:30:00Z"
-    }
-  ],
-  "meta": {
-    "total": 150
-  }
-}
-```
+Most polluted sensors by PM2.5 value.
 
-**cURL Example:**
+### `GET /api/v1/analytics/top-temperature?limit=N`
 
-```bash
-curl "http://localhost:8080/api/v1/sensors/a1b2c3d4-e5f6-7890-abcd-ef1234567890/readings?from=2025-11-19T00:00:00Z&to=2025-11-19T23:59:59Z&limit=100"
-```
+Hottest sensors by temperature.
 
----
+### `GET /api/v1/analytics/quietest?limit=N`
 
-#### `GET /api/v1/sensors/:id/alerts`
+Quietest sensors by noise level.
 
-Get all alerts for a specific sensor.
+### `GET /api/v1/analytics/hourly`
 
-**Path Parameters:**
+Hourly aggregations across sensors.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | UUID | Sensor ID |
+### `GET /api/v1/analytics/compare`
 
-**Query Parameters:**
+Sensor comparison data.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | 50 | Max results |
+### `GET /api/v1/analytics/zones`
 
-**Response:**
+Zone-level analytics.
 
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 123,
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_name": "Downtown Temp 1",
-      "alert_type": "high_temperature",
-      "severity": "high",
-      "message": "High temperature detected at Downtown Temp 1: 38.50°C",
-      "value": 38.5,
-      "threshold": 35.0,
-      "timestamp": "2025-11-19T21:30:00Z",
-      "acknowledged": false
-    }
-  ],
-  "meta": {
-    "total": 5
-  }
-}
-```
+### `GET /api/v1/analytics/anomalies?limit=50&since=<timestamp>`
+
+Recent anomaly events from `anomaly_events` table.
+
+### `GET /api/v1/analytics/events?limit=20&since=<timestamp>`
+
+Recent detected pattern events from `detected_events` table.
 
 ---
 
-### Readings
+## Metrics — `/api/v1/metrics`
 
-#### `GET /api/v1/readings`
+### `GET /api/v1/metrics/kafka`
 
-Get readings from all sensors with filtering and pagination.
+Kafka metrics including consumer lag per group.
 
-**Query Parameters:**
+### `GET /api/v1/metrics/redis`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `sensor_id` | UUID | - | Filter by sensor ID |
-| `sensor_type` | string | - | Filter by sensor type |
-| `from` | timestamp | - | Start time |
-| `to` | timestamp | - | End time |
-| `page` | integer | 1 | Page number |
-| `limit` | integer | 100 | Results per page |
-| `sort` | string | `desc` | Sort by timestamp: `asc` or `desc` |
+Redis memory usage, key count, and connection info.
 
-**Response:**
+### `GET /api/v1/metrics/system`
 
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 12345,
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_name": "Downtown Temp 1",
-      "sensor_type": "temperature",
-      "value": 22.5,
-      "unit": "celsius",
-      "timestamp": "2025-11-19T21:30:00Z"
-    }
-  ],
-  "meta": {
-    "page": 1,
-    "limit": 100,
-    "total": 5000
-  }
-}
-```
+System health overview.
 
-**cURL Examples:**
+### `GET /api/v1/metrics/nerds`
 
-```bash
-# Get all readings
-curl http://localhost:8080/api/v1/readings
+Aggregated nerd stats (global reading counts, throughput, uptime).
 
-# Get temperature readings from last hour
-curl "http://localhost:8080/api/v1/readings?sensor_type=temperature&from=2025-11-19T20:00:00Z"
+### `GET /api/v1/metrics/nerds/global`
 
-# Get readings for specific sensor
-curl "http://localhost:8080/api/v1/readings?sensor_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-```
+Alias for `/nerds`.
+
+### `GET /api/v1/metrics/nerds/session`
+
+Per-session reading stats.
 
 ---
 
-#### `GET /api/v1/readings/latest`
+## Pipeline — `/api/v1/pipeline`
 
-Get the latest reading from all sensors (from Redis cache).
+### `GET /api/v1/pipeline/flow/stats`
 
-**Response:**
+Data flow statistics across the pipeline.
 
-```json
-{
-  "success": true,
-  "data": {
-    "temperature": [...],
-    "pollution": [...],
-    "humidity": [...],
-    "noise": [...]
-  }
-}
-```
+### `GET /api/v1/pipeline/kafka/topics`
 
-**cURL Example:**
+List all Kafka topics.
 
-```bash
-curl http://localhost:8080/api/v1/readings/latest
-```
+### `GET /api/v1/pipeline/kafka/topics/:topic`
 
----
+Details for a specific Kafka topic.
 
-### Analytics
+### `GET /api/v1/pipeline/kafka/topics/:topic/messages`
 
-#### `GET /api/v1/analytics/city-stats`
+Browse messages in a Kafka topic.
 
-Get city-wide statistics for all sensor types.
+### `GET /api/v1/pipeline/redis/keys`
 
-**Caching:** 5 minutes
+Browse Redis keys.
 
-**Response:**
+### `GET /api/v1/pipeline/redis/keys/:key`
 
-```json
-{
-  "success": true,
-  "data": {
-    "avg_temperature": 22.5,
-    "avg_pollution": 45.2,
-    "avg_humidity": 65.0,
-    "avg_noise": 58.3,
-    "timestamp": "2025-11-19T21:30:00Z"
-  }
-}
-```
+Get detail for a specific Redis key.
 
-**cURL Example:**
+### `GET /api/v1/pipeline/dlq?limit=10`
 
-```bash
-curl http://localhost:8080/api/v1/analytics/city-stats
-```
+Browse dead letter queue messages. Each message includes `error`, `original-topic`, and `retry-count` headers.
+
+### `GET /api/v1/pipeline/stream/connections`
+
+SSE connection info.
 
 ---
 
-#### `GET /api/v1/analytics/sensors/:id/hourly`
-
-Get hourly aggregated statistics for a sensor.
-
-**Path Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | UUID | Sensor ID |
-
-**Query Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `from` | timestamp | Yes | Start time |
-| `to` | timestamp | Yes | End time |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_type": "temperature",
-      "avg_value": 22.5,
-      "min_value": 20.0,
-      "max_value": 25.0,
-      "count": 202,
-      "period_start": "2025-11-19T10:00:00Z",
-      "period_end": "2025-11-19T11:00:00Z"
-    }
-  ]
-}
-```
-
-**cURL Example:**
-
-```bash
-curl "http://localhost:8080/api/v1/analytics/sensors/a1b2c3d4-e5f6-7890-abcd-ef1234567890/hourly?from=2025-11-19T00:00:00Z&to=2025-11-19T23:59:59Z"
-```
-
----
-
-#### `GET /api/v1/analytics/top-polluted`
-
-Get the most polluted areas in the city.
-
-**Caching:** 10 minutes
-
-**Query Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | 10 | Number of results |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_name": "Highway Air 2",
-      "sensor_type": "pollution",
-      "avg_value": 120.5,
-      "unit": "µg/m³",
-      "location": {
-        "latitude": 40.745,
-        "longitude": -73.995
-      }
-    }
-  ],
-  "meta": {
-    "total": 5
-  }
-}
-```
-
-**cURL Example:**
-
-```bash
-curl "http://localhost:8080/api/v1/analytics/top-polluted?limit=5"
-```
-
----
-
-#### `GET /api/v1/analytics/top-temperature`
-
-Get the hottest areas in the city.
-
-**Caching:** 10 minutes
-
-**Query Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | 10 | Number of results |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_name": "Park Temp 1",
-      "sensor_type": "temperature",
-      "avg_value": 38.5,
-      "unit": "celsius",
-      "location": {
-        "latitude": 40.7812,
-        "longitude": -73.9665
-      }
-    }
-  ],
-  "meta": {
-    "total": 5
-  }
-}
-```
-
-**cURL Example:**
-
-```bash
-curl "http://localhost:8080/api/v1/analytics/top-temperature?limit=5"
-```
-
----
-
-#### `GET /api/v1/analytics/quietest`
-
-Get the quietest areas in the city.
-
-**Caching:** 10 minutes
-
-**Query Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | 10 | Number of results |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_name": "Park Noise 1",
-      "sensor_type": "noise",
-      "avg_value": 45.2,
-      "unit": "dB",
-      "location": {
-        "latitude": 40.7785,
-        "longitude": -73.9645
-      }
-    }
-  ],
-  "meta": {
-    "total": 5
-  }
-}
-```
-
----
-
-### Alerts
-
-#### `GET /api/v1/alerts`
-
-Get all alerts with filtering and pagination.
-
-**Query Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `active` | boolean | - | Filter by acknowledgment status (`true` = unacknowledged) |
-| `severity` | string | - | Filter by severity: `low`, `medium`, `high`, `critical` |
-| `page` | integer | 1 | Page number |
-| `limit` | integer | 50 | Results per page (max: 1000) |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 123,
-      "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "sensor_name": "Highway Air 2",
-      "sensor_type": "pollution",
-      "alert_type": "critical_pollution",
-      "severity": "critical",
-      "message": "Critical air pollution at Highway Air 2: 155.23 µg/m³",
-      "value": 155.23,
-      "threshold": 150.0,
-      "timestamp": "2025-11-19T21:30:00Z",
-      "acknowledged": false,
-      "acknowledged_at": null,
-      "acknowledged_by": null
-    }
-  ],
-  "meta": {
-    "page": 1,
-    "limit": 50,
-    "total": 150
-  }
-}
-```
-
-**cURL Examples:**
-
-```bash
-# Get all active (unacknowledged) alerts
-curl "http://localhost:8080/api/v1/alerts?active=true"
-
-# Get critical alerts
-curl "http://localhost:8080/api/v1/alerts?severity=critical"
-
-# Get high and critical unacknowledged alerts
-curl "http://localhost:8080/api/v1/alerts?active=true&severity=high"
-```
-
----
-
-#### `GET /api/v1/alerts/:id`
-
-Get details of a specific alert.
-
-**Path Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | integer | Alert ID |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": {
-    "id": 123,
-    "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "sensor_name": "Highway Air 2",
-    "sensor_type": "pollution",
-    "alert_type": "critical_pollution",
-    "severity": "critical",
-    "message": "Critical air pollution at Highway Air 2: 155.23 µg/m³",
-    "value": 155.23,
-    "threshold": 150.0,
-    "timestamp": "2025-11-19T21:30:00Z",
-    "acknowledged": false
-  }
-}
-```
-
-**cURL Example:**
-
-```bash
-curl http://localhost:8080/api/v1/alerts/123
-```
-
----
-
-#### `POST /api/v1/alerts/:id/acknowledge`
-
-Acknowledge an alert to mark it as handled.
-
-**Path Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | integer | Alert ID |
-
-**Request Body:**
-
-```json
-{
-  "acknowledged_by": "admin"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": {
-    "id": 123,
-    "acknowledged": true,
-    "acknowledged_at": "2025-11-19T21:35:00Z",
-    "acknowledged_by": "admin"
-  }
-}
-```
-
-**cURL Example:**
-
-```bash
-curl -X POST http://localhost:8080/api/v1/alerts/123/acknowledge \
-  -H "Content-Type: application/json" \
-  -d '{"acknowledged_by": "admin"}'
-```
-
----
-
-### SSE
-
-#### `GET /stream`
-
-SSE endpoint for real-time sensor updates and alerts.
-
-**Connection:**
-
-```javascript
-const eventSource = new EventSource('http://localhost:8080/stream?session_id=<session-id>');
-```
-
-**Client handling:**
-
-```javascript
-eventSource.onopen = () => {
-  console.log('SSE connection established');
-};
-
-eventSource.onmessage = (event) => {
-  const payload = JSON.parse(event.data);
-  console.log(payload.type, payload.data);
-};
-
-eventSource.onerror = (err) => {
-  console.error('SSE error', err);
-};
-```
-
-**Server payloads:**
-
-```json
-{
-  "type": "sensor_update",
-  "data": {
-    "sensor_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "sensor_type": "temperature",
-    "value": 22.5,
-    "unit": "celsius",
-    "timestamp": "2025-11-19T21:30:00Z"
-  }
-}
-```
-
-**Alert:**
-```json
-{
-  "type": "alert",
-  "data": {
-    "alert_id": "uuid",
-    "sensor_id": "uuid",
-    "alert_type": "high_temperature",
-    "severity": "high",
-    "value": 38.5,
-    "threshold": 35.0,
-    "message": "High temperature detected...",
-    "timestamp": "2025-11-19T21:30:00Z"
-  }
-}
-```
-
-**SSE Stats:**
-
-```bash
-# Get SSE connection statistics
-curl http://localhost:8080/stream/stats
-```
-
----
-
-## Rate Limiting
-
-**Coming in v1.1:**
-- 100 requests per minute per IP address
-- SSE: 100 messages per minute per connection
-
----
-
-## Best Practices
-
-1. **Timestamps**: Always use RFC3339 format (e.g., `2025-11-19T21:30:00Z`)
-2. **Pagination**: Use pagination for large datasets
-3. **Caching**: Take advantage of cached endpoints for better performance
-4. **SSE**: Subscribe only to sensors you need to reduce bandwidth
-5. **Error Handling**: Always check the `success` field in responses
-
----
-
-## Support
-
-For issues or questions:
-- GitHub: [smart-city-monitor](https://github.com/chetansierra/smart-city-monitor)
-- Email: support@smartcity.example.com
-
----
-
-**API Version:** 1.0
-**Last Updated:** November 19, 2025
+## Admin — `/api/v1/admin`
+
+### Sensor Control
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/sensors/control` | Control individual sensors |
+| POST | `/sensors/start-all` | Start all sensors |
+| POST | `/sensors/stop-all` | Stop all sensors |
+
+### Simulation Control
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/simulation/rate` | Set generation rate (ms) |
+| GET | `/simulation/status` | Get simulation status |
+| GET | `/simulation/config` | Get full simulation config |
+| POST | `/simulation/threshold` | Set sensor threshold |
+| POST | `/simulation/behavior` | Set sensor behavior pattern |
+| POST | `/simulation/time-compression` | Set time compression factor |
+| POST | `/simulation/chaos-mode` | Toggle chaos mode |
+| POST | `/simulation/reset-config` | Reset config to defaults |
+
+### Scenarios
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/scenarios` | List available scenarios (normal, rush_hour, heatwave, industrial_incident) |
+| POST | `/scenarios/activate` | Activate a scenario. Body: `{ "scenario": "rush_hour" }` |
+| GET | `/scenarios/current` | Get currently active scenario |
+
+### System
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/system/clear-cache` | Clear Redis cache |
+| POST | `/system/reset` | Reset entire simulation |

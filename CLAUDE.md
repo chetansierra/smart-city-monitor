@@ -195,3 +195,21 @@ In addition to the standard Kafka/Redis/PostgreSQL vars, the following resilienc
 - **Missing aggregates**: The aggregation worker runs every 5 minutes. Check `SELECT COUNT(*) FROM sensor_aggregates` after waiting.
 - **Circuit breaker open**: Check logs for `circuit breaker opened` messages. The breaker auto-recovers after `CB_TIMEOUT_SECONDS`. During open state, data-ingestion skips Redis updates but continues PostgreSQL writes; simulator buffers messages in memory.
 - **Failed batch files**: If PostgreSQL batch writes fail after all retries, data is written to `/tmp/smart-city-failed-batch-*.json` inside the data-ingestion container.
+
+## Documentation Maintenance
+
+Architecture documentation lives in `docs/architecture/` and is structured for RAG consumption (self-contained, declarative, structured with tables). When making changes that affect architecture, data flow, API routes, data models, or technology configuration, **update the corresponding doc file in the same commit**:
+
+| Change Type | Update These Docs |
+|---|---|
+| New/changed API route | `docs/API.md`, `docs/architecture/services/api-gateway.md` |
+| Kafka topic/consumer changes | `docs/architecture/technologies/kafka.md`, affected service doc |
+| Redis key/channel changes | `docs/architecture/technologies/redis.md`, affected service doc |
+| PostgreSQL schema changes | `docs/architecture/technologies/postgresql.md` |
+| SSE event type changes | `docs/architecture/technologies/sse.md`, `docs/architecture/services/frontend.md` |
+| Resilience pattern changes | `docs/architecture/resilience.md`, affected service doc |
+| Anomaly/pattern detection changes | `docs/architecture/intelligence.md`, `docs/architecture/services/data-ingestion.md` |
+| Deployment/infra changes | `docs/architecture/deployment.md`, `README.md` |
+| New service or major refactor | `docs/architecture/overview.md`, `docs/architecture/README.md`, `README.md` |
+
+Each doc file should remain independently understandable (no cross-doc dependencies for core meaning). Use tables, lists, and clear section headers. Avoid narrative prose — prefer declarative facts.

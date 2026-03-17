@@ -4,6 +4,7 @@ import {
   API_BASE_URL,
   DEFAULT_METRIC_FILTER,
   GOOGLE_MAPS_API_KEY,
+  GOOGLE_MAPS_MAP_ID,
   METRIC_COLORS,
   METRIC_FILTER_KEY,
   METRIC_KEYS,
@@ -98,7 +99,8 @@ function App() {
   const mapMarkersRef = useRef<Record<string, any>>({});
   const mapInfoWindowsRef = useRef<Record<string, any>>({});
   const mapRadiusCircleRef = useRef<any>(null);
-  const nerdMapContainerRef = useRef<HTMLDivElement | null>(null);
+  const [nerdMapContainerNode, setNerdMapContainerNode] = useState<HTMLDivElement | null>(null);
+  const nerdMapContainerRef = useCallback((node: HTMLDivElement | null) => { setNerdMapContainerNode(node); }, []);
   const nerdMapRef = useRef<any>(null);
   const nerdMapMarkersRef = useRef<Record<string, any>>({});
 
@@ -254,6 +256,7 @@ function App() {
           mapRef.current = new window.google.maps.Map(mapContainerNode, {
             center: { lat: sessionConfig.origin_lat, lng: sessionConfig.origin_lon },
             zoom: 12,
+            mapId: GOOGLE_MAPS_MAP_ID,
             mapTypeControl: false,
             fullscreenControl: false,
             streetViewControl: false,
@@ -270,7 +273,7 @@ function App() {
       cancelled = true;
       setMapReady(false);
       // Clear stale markers so they get re-created on the new map instance
-      Object.values(mapMarkersRef.current).forEach((m: any) => m.setMap(null));
+      Object.values(mapMarkersRef.current).forEach((m: any) => { m.map = null; });
       mapMarkersRef.current = {};
       Object.values(mapInfoWindowsRef.current).forEach((w: any) => w.close());
       mapInfoWindowsRef.current = {};
@@ -319,7 +322,7 @@ function App() {
 
     Object.entries(mapMarkersRef.current).forEach(([sensorID, marker]) => {
       if (nextIDs.has(sensorID)) return;
-      marker.setMap(null);
+      marker.map = null;
       delete mapMarkersRef.current[sensorID];
       const infoWindow = mapInfoWindowsRef.current[sensorID];
       if (infoWindow) {
@@ -339,45 +342,32 @@ function App() {
         lng: Number(sensor.location?.longitude),
       };
 
+      const circleEl = document.createElement('div');
+      circleEl.style.cssText = `width:14px;height:14px;border-radius:50%;background:${METRIC_COLORS[safeType]};border:2px solid #fff;opacity:0.95;cursor:pointer;`;
+
       let marker = mapMarkersRef.current[sensor.id];
       if (!marker) {
-        marker = new window.google.maps.Marker({
+        marker = new window.google.maps.marker.AdvancedMarkerElement({
           map: mapRef.current,
           position: markerPosition,
           title: hasValue ? `${parsedValue.toFixed(1)} ${METRIC_UNITS[safeType]}` : 'No live reading yet',
-          icon: {
-            path: window.google.maps.SymbolPath.CIRCLE,
-            fillColor: METRIC_COLORS[safeType],
-            fillOpacity: 0.95,
-            strokeColor: '#ffffff',
-            strokeOpacity: 1,
-            strokeWeight: 2,
-            scale: 7,
-          },
+          content: circleEl,
         });
         mapMarkersRef.current[sensor.id] = marker;
       } else {
-        marker.setPosition(markerPosition);
-        marker.setTitle(hasValue ? `${parsedValue.toFixed(1)} ${METRIC_UNITS[safeType]}` : 'No live reading yet');
-        marker.setIcon({
-          path: window.google.maps.SymbolPath.CIRCLE,
-          fillColor: METRIC_COLORS[safeType],
-          fillOpacity: 0.95,
-          strokeColor: '#ffffff',
-          strokeOpacity: 1,
-          strokeWeight: 2,
-          scale: 7,
-        });
+        marker.position = markerPosition;
+        marker.title = hasValue ? `${parsedValue.toFixed(1)} ${METRIC_UNITS[safeType]}` : 'No live reading yet';
+        marker.content = circleEl;
       }
 
       let infoWindow = mapInfoWindowsRef.current[sensor.id];
       if (!infoWindow) {
         infoWindow = new window.google.maps.InfoWindow();
         mapInfoWindowsRef.current[sensor.id] = infoWindow;
-        marker.addListener('mouseover', () => {
+        marker.element.addEventListener('mouseenter', () => {
           infoWindow.open({ map: mapRef.current, anchor: marker });
         });
-        marker.addListener('mouseout', () => infoWindow.close());
+        marker.element.addEventListener('mouseleave', () => infoWindow.close());
       }
 
       infoWindow.setContent(`
@@ -411,7 +401,7 @@ function App() {
 
   // ── Nerd map init ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (activeNav !== 'nerds' || nerdScope !== 'global' || !GOOGLE_MAPS_API_KEY || !nerdMapContainerRef.current) {
+    if (activeNav !== 'nerds' || nerdScope !== 'global' || !GOOGLE_MAPS_API_KEY || !nerdMapContainerNode) {
       setNerdMapReady(false);
       nerdMapRef.current = null;
       return;
@@ -421,11 +411,12 @@ function App() {
     const initNerdMap = async () => {
       try {
         await loadGoogleMaps(GOOGLE_MAPS_API_KEY);
-        if (cancelled || !nerdMapContainerRef.current || !window.google?.maps) return;
+        if (cancelled || !nerdMapContainerNode || !window.google?.maps) return;
         if (!nerdMapRef.current) {
-          nerdMapRef.current = new window.google.maps.Map(nerdMapContainerRef.current, {
+          nerdMapRef.current = new window.google.maps.Map(nerdMapContainerNode, {
             center: { lat: 22.0, lng: 78.0 },
             zoom: 2,
+            mapId: GOOGLE_MAPS_MAP_ID,
             mapTypeControl: false,
             fullscreenControl: false,
             streetViewControl: false,
@@ -445,9 +436,11 @@ function App() {
     void initNerdMap();
     return () => {
       cancelled = true;
+      Object.values(nerdMapMarkersRef.current).forEach((m: any) => { m.map = null; });
+      nerdMapMarkersRef.current = {};
       nerdMapRef.current = null;
     };
-  }, [activeNav, nerdScope]);
+  }, [activeNav, nerdScope, nerdMapContainerNode]);
 
   // ── Nerd map markers ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -474,7 +467,7 @@ function App() {
 
     Object.entries(nerdMapMarkersRef.current).forEach(([pointID, marker]) => {
       if (nextIDs.has(pointID)) return;
-      marker.setMap(null);
+      marker.map = null;
       delete nerdMapMarkersRef.current[pointID];
     });
 
@@ -482,34 +475,22 @@ function App() {
       const typeKey = point.type?.toLowerCase() as MetricKey;
       const color = METRIC_KEYS.includes(typeKey) ? METRIC_COLORS[typeKey] : '#16a34a';
       const position = { lat: point.lat, lng: point.lon };
+
+      const circleEl = document.createElement('div');
+      circleEl.style.cssText = `width:12px;height:12px;border-radius:50%;background:${color};border:1.8px solid #fff;opacity:0.92;cursor:pointer;`;
+
       let marker = nerdMapMarkersRef.current[point.id];
       if (!marker) {
-        marker = new window.google.maps.Marker({
+        marker = new window.google.maps.marker.AdvancedMarkerElement({
           map: nerdMapRef.current,
           position,
-          icon: {
-            path: window.google.maps.SymbolPath.CIRCLE,
-            fillColor: color,
-            fillOpacity: 0.92,
-            strokeColor: '#ffffff',
-            strokeOpacity: 0.95,
-            strokeWeight: 1.8,
-            scale: 6,
-          },
           title: formatMetricName(METRIC_KEYS.includes(typeKey) ? typeKey : 'temperature'),
+          content: circleEl,
         });
         nerdMapMarkersRef.current[point.id] = marker;
       } else {
-        marker.setPosition(position);
-        marker.setIcon({
-          path: window.google.maps.SymbolPath.CIRCLE,
-          fillColor: color,
-          fillOpacity: 0.92,
-          strokeColor: '#ffffff',
-          strokeOpacity: 0.95,
-          strokeWeight: 1.8,
-          scale: 6,
-        });
+        marker.position = position;
+        marker.content = circleEl;
       }
     });
 

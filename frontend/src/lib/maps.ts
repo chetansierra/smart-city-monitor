@@ -91,7 +91,7 @@ export const loadGoogleMaps = (apiKey: string): Promise<void> => {
 
     const script = document.createElement('script');
     script.id = MAPS_SCRIPT_ID;
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&loading=async&libraries=marker`;
     script.async = true;
     script.defer = true;
     script.onload = () => {

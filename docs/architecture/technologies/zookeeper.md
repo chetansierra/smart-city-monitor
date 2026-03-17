@@ -1,12 +1,11 @@
-# Zookeeper Architecture Notes
+# Smart City Monitor — Zookeeper (DEPRECATED)
 
-## Role
+## Status: Not Used
 
-Zookeeper coordinates Kafka broker metadata and cluster state in current Docker Compose setup.
+Zookeeper is NOT part of the Smart City Monitor deployment. Kafka runs in KRaft mode (self-managed metadata), which eliminates the need for Zookeeper.
 
-## Runtime Notes
+This file is retained for historical reference only.
 
-- Single-node development setup.
-- Kafka service depends on Zookeeper health in compose.
+## Historical Context
 
-If migrating to KRaft mode in future, this component can be removed.
+Early versions of the Docker Compose setup used Zookeeper for Kafka broker coordination. The system was migrated to KRaft mode (`confluentinc/cp-kafka:7.5.0`) with `KAFKA_PROCESS_ROLES: "broker,controller"`, making Zookeeper unnecessary.
